@@ -66,6 +66,10 @@ project uses [semantic versioning](https://semver.org/).
   `make_contracts`, `render_last_turn`, `register_callback`, ...).
 
 ### Added
+- `contragent.formulas.sat.Progressor`: the satisfiability search's
+  abstraction, one progression step, and its end-of-trace verdict
+  (`accepting(node, true_keys)`, the true keys of the last event), for
+  building explicit automata over atoms.
 - Prompts. After a call whose contract owes the next event
   (`G(a -> X b)` once `a` happened), `guard_after` returns a prompt to
   call `b` next (`CheckResult.prompts` / `.prompt`), which `wrap`

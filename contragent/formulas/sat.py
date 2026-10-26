@@ -695,6 +695,42 @@ def _build_alphabet(
 # ---------------------------------------------------------------------------
 
 
+class Progressor:
+    """Public handle on the residual algebra the search above walks.
+
+    Exposes abstraction, one progression step, and the end-of-trace
+    verdict so callers can build explicit automata (states are canonical
+    residual nodes, ``False`` is the rejecting sink, ``True`` the
+    accepting sink) with exactly the semantics :func:`is_satisfiable`
+    decides. Leaves are ``Atom``/``Subset`` only; arithmetic comparisons
+    and counters are out of scope for this handle.
+    """
+
+    def __init__(self, formulas: Any) -> None:
+        items = list(formulas) if isinstance(formulas, (list, tuple, set, frozenset)) else [formulas]
+        self._table = _LeafTable()
+        self.root: Node = _mk_and(_abstract(f, self._table) for f in items)
+        if self._table.cmp_info:
+            raise TypeError("Progressor: arithmetic comparisons are not supported")
+        self.keys: tuple[str, ...] = tuple(sorted(self._table.atom_ids))
+
+    def step(self, node: Node, true_keys: Iterable[str]) -> Node:
+        """Residual after one event at which exactly ``true_keys`` hold."""
+        ids = self._table.atom_ids
+        return _progress(node, frozenset(ids[k] for k in true_keys if k in ids))
+
+    def accepting(self, node: Node, true_keys: Iterable[str] = ()) -> bool:
+        """True when the trace may end in ``node``, after an event at which ``true_keys`` hold.
+
+        After the end no tool is called and the state stays as it was, so
+        the state atoms among ``true_keys`` (those whose predicate is not
+        an event predicate) stay true; with none, every atom reads false.
+        """
+        ids = self._table.atom_ids
+        val = frozenset(ids[k] for k in true_keys if k in ids)
+        return _finalize(node, _idle_props(self._table, val)) is True
+
+
 def is_satisfiable(
     formulas: Any,
     *,
