@@ -55,6 +55,10 @@ project uses [semantic versioning](https://semver.org/).
   or from raw formulas now flag their unbounded eventualities, so
   `finish_session()` reports an owed `F` obligation for them as it
   already did for YAML contracts.
+- `check_dead_ends` now inspects guarantees loaded from YAML. They
+  arrive wrapped in `DetFormula`, which the check passed to its formula
+  walkers unopened, so it found no obligation and no count bound and
+  reported every loaded library as free of dead ends.
 
 ### Removed
 - Dead code, none of it referenced by the package, the tests, the
