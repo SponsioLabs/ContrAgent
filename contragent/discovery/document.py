@@ -53,8 +53,8 @@ class DocumentExtractor:
         api_key: Provider API key. Falls back to ``OPENAI_API_KEY`` /
             ``ANTHROPIC_API_KEY`` / ``GOOGLE_API_KEY`` per provider.
         client: Pre-configured provider client (overrides model/api_key).
-        provider: ``openai`` / ``anthropic`` / ``gemini``.  Auto-detected
-            from env when ``None``.
+        provider: ``openai`` / ``anthropic`` / ``gemini`` / ``bedrock``.
+            Auto-detected from env when ``None`` (never ``bedrock``).
         base_url: OpenAI-compatible HTTP endpoint (Ollama, OpenRouter,
             DeepSeek, vLLM, Azure, …).
     """

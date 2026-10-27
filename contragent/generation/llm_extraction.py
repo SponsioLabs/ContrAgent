@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -553,18 +554,43 @@ Rules:
 # ---------------------------------------------------------------------------
 
 
+def _json_payload(text: str) -> str:
+    """The JSON object in a model reply. Models without a JSON mode often
+    write a sentence or two first and fence the object in a ```json
+    block; take the last fenced block, else the outermost braces."""
+    text = text.strip()
+    try:
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
+        pass
+    fenced = re.findall(r"```(?:json)?\s*\n(.*?)\n?```", text, flags=re.DOTALL)
+    if fenced:
+        return fenced[-1].strip()
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        return text[start : end + 1]
+    return text or "{}"
+
+
 class UnifiedExtractor:
     """LLM-based constraint extraction shared by all input paths.
 
     Uses the Atom vocabulary and Pattern catalog to guide the LLM toward
     outputs that can be compiled into enforceable formulas.
 
-    Supports four provider families:
+    Supports five provider families:
 
     * ``"openai"`` (default) — OpenAI's official ``chat.completions``.
     * ``"anthropic"`` — Claude via the ``anthropic`` SDK.
     * ``"gemini"`` — Google's Gemini via ``google-genai`` (1500 req/day
       free tier makes this the lowest-friction on-ramp).
+    * ``"bedrock"`` — Claude on Amazon Bedrock via the ``anthropic`` SDK's
+      Bedrock client (``pip install 'anthropic[bedrock]'``).  Credentials
+      come from the standard AWS chain (``AWS_ACCESS_KEY_ID`` /
+      ``AWS_SECRET_ACCESS_KEY`` / ``AWS_SESSION_TOKEN`` or a profile), the
+      region from ``AWS_REGION``.  ``model`` is a Bedrock model or
+      inference-profile id.
     * **OpenAI-compatible endpoints** — pass ``base_url=...`` (or set
       ``OPENAI_BASE_URL``).  This single switch covers Ollama (local),
       OpenRouter, DeepSeek, Together, Groq, Cerebras, Fireworks, vLLM,
@@ -582,8 +608,9 @@ class UnifiedExtractor:
             against the custom endpoint).
         client: Pre-configured ``openai.OpenAI`` / ``anthropic.Anthropic``
             client.  Overrides ``model`` / ``api_key`` / ``base_url``.
-        provider: One of ``openai``, ``anthropic``, ``gemini``.  If
-            unset, auto-detected from env vars (precedence: explicit
+        provider: One of ``openai``, ``anthropic``, ``gemini``,
+            ``bedrock``.  If unset, auto-detected from env vars (never
+            ``bedrock``: AWS credentials are too common to imply it) (precedence: explicit
             ``base_url`` → openai, ``ANTHROPIC_API_KEY`` → anthropic,
             ``GOOGLE_API_KEY``/``GEMINI_API_KEY`` → gemini, else
             openai).
@@ -647,6 +674,24 @@ class UnifiedExtractor:
                     ) from None
                 kwargs = {"api_key": self._api_key} if self._api_key else {}
                 self._client = anthropic.Anthropic(**kwargs)
+        elif provider == "bedrock":
+            self._model = model or "us.anthropic.claude-opus-4-6-v1"
+            if client is not None:
+                self._client = client
+            else:
+                try:
+                    import anthropic
+                except ImportError:
+                    raise ImportError(
+                        "anthropic[bedrock] is required for --provider bedrock. "
+                        "Install with: pip install 'anthropic[bedrock]'"
+                    ) from None
+                region = (
+                    os.environ.get("AWS_REGION")
+                    or os.environ.get("AWS_DEFAULT_REGION")
+                    or "us-west-2"
+                )
+                self._client = anthropic.AnthropicBedrock(aws_region=region)
         else:  # "openai" — also covers OpenAI-compatible base_url providers
             self._model = model or "gpt-4o-mini"
             if client is not None:
@@ -668,7 +713,7 @@ class UnifiedExtractor:
     def _call_llm(self, system_prompt: str, user_content: str) -> tuple[list[dict], list[dict]]:
         """Make the LLM call and parse the JSON response.
 
-        Supports both OpenAI and Gemini providers.
+        Dispatches to the configured provider.
 
         Returns:
             Tuple of (constraints, discovered_tools).
@@ -677,7 +722,7 @@ class UnifiedExtractor:
         try:
             if self._provider == "gemini":
                 content = self._call_gemini(system_prompt, user_content)
-            elif self._provider == "anthropic":
+            elif self._provider in ("anthropic", "bedrock"):
                 content = self._call_anthropic(system_prompt, user_content)
             else:
                 content = self._call_openai(system_prompt, user_content)
@@ -768,12 +813,21 @@ class UnifiedExtractor:
         # response_format, so we lean on the existing prompt's
         # ``Output JSON only`` instruction (already present in every
         # extractor system prompt).  Temperature 0 keeps it deterministic.
+        sampling: dict[str, Any] = {"temperature": 0.0}
+        if self._provider == "bedrock":
+            # Bedrock serves Claude models older than 4.7 only under the
+            # classic body version, so this call stays on it. The SDK that
+            # sends 2026-10-21 no longer takes ``temperature`` as an
+            # argument; on the classic version it still belongs in the body.
+            sampling = {
+                "extra_body": {"anthropic_version": "bedrock-2023-05-31", "temperature": 0.0}
+            }
         msg = self._client.messages.create(
             model=self._model,
             max_tokens=4096,
-            temperature=0.0,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
+            **sampling,
         )
         # ``msg.content`` is a list of content blocks; the first text
         # block is the JSON payload.  Models occasionally wrap JSON in a
@@ -784,13 +838,7 @@ class UnifiedExtractor:
             if getattr(block, "type", None) == "text":
                 text = block.text
                 break
-        text = text.strip()
-        if text.startswith("```"):
-            # Strip leading ```json (or ```) and trailing ```
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-        return text or "{}"
+        return _json_payload(text)
 
     def _extract(
         self,
