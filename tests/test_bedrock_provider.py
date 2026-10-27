@@ -30,11 +30,12 @@ def test_bedrock_sends_the_classic_body_version_and_parses_the_reply():
     assert "temperature" not in call
 
 
-def test_the_anthropic_provider_sends_no_bedrock_version():
+def test_the_anthropic_provider_sends_no_sampling_parameters():
+    # 2026-10-21 rejects temperature/top_p/top_k on every model
     client = SimpleNamespace(messages=FakeMessages())
     UnifiedExtractor(provider="anthropic", client=client)._call_llm("system", "user")
     call = client.messages.calls[0]
-    assert "extra_body" not in call and call["temperature"] == 0.0  # unchanged
+    assert "extra_body" not in call and "temperature" not in call
 
 
 def test_bedrock_is_never_auto_detected(monkeypatch):

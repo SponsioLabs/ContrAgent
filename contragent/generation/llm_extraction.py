@@ -812,8 +812,10 @@ class UnifiedExtractor:
         # Anthropic Messages API doesn't have a native ``json_object``
         # response_format, so we lean on the existing prompt's
         # ``Output JSON only`` instruction (already present in every
-        # extractor system prompt).  Temperature 0 keeps it deterministic.
-        sampling: dict[str, Any] = {"temperature": 0.0}
+        # extractor system prompt); _json_payload tolerates prose around it.
+        # The Claude API (2026-10-21) rejects sampling parameters, so this
+        # call samples with the defaults.
+        sampling: dict[str, Any] = {}
         if self._provider == "bedrock":
             # Bedrock serves Claude models older than 4.7 only under the
             # classic body version, so this call stays on it. The SDK that
