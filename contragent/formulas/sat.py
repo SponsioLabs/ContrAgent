@@ -707,7 +707,9 @@ class Progressor:
     """
 
     def __init__(self, formulas: Any) -> None:
-        items = list(formulas) if isinstance(formulas, (list, tuple, set, frozenset)) else [formulas]
+        items = (
+            list(formulas) if isinstance(formulas, (list, tuple, set, frozenset)) else [formulas]
+        )
         self._table = _LeafTable()
         self.root: Node = _mk_and(_abstract(f, self._table) for f in items)
         if self._table.cmp_info:
