@@ -97,6 +97,7 @@ or ``contragent export-chase --config LIB -o LIB.logics``.
 
 from __future__ import annotations
 
+import inspect
 import math
 import re
 from collections.abc import Sequence
@@ -464,21 +465,26 @@ def export_library(
 
 
 def is_available() -> bool:
-    """True when ``chase_cps`` and the CHASE modules it is built on can be imported."""
+    """True when ``chase_cps`` and the CHASE modules it is built on can be
+    imported, and its checks take the ``context=`` the session passes."""
     try:
+        import chase_cps  # type: ignore[import-not-found]
+
         # chase_cps imports without its compiled modules and fails at the first
         # check; _native is where they load, until chase_cps has a public check.
         import chase_cps._native  # type: ignore[import-not-found]  # noqa: F401
     except ImportError:
         return False
-    return True
+    return "context" in inspect.signature(chase_cps.verify).parameters
 
 
 def unavailable_reason() -> str:
     return (
-        "chase_cps, the Python package of CHASE, is not installed: pip install "
-        "'chase-cps>=0.2.0' (or 'contragent[chase]'). The checks run nuXmv; "
-        "`chase-cps doctor` shows the tools found."
+        "chase_cps, the Python package of CHASE, is not installed, or does not "
+        "take the context= of a check: install a chase-cps released after 0.2.0 "
+        "(or 'contragent[chase]'); until that release, the contract-ops branch: "
+        "pip install 'chase-cps @ git+https://github.com/chase-cps/chase@contract-ops'. "
+        "The checks run nuXmv; `chase-cps doctor` shows the tools found."
     )
 
 
@@ -488,8 +494,8 @@ class ChaseSession:
     ``contracts`` maps each contract identifier (``c1``, ``c2``, ...) to a
     ``chase_cps.Contract`` over the variables the contract uses. The
     finite-trace axiom of a ``semantics="finite"`` export is kept apart in
-    ``axiom``, and every check below reads the contracts on the traces it
-    allows. The checks run nuXmv through ``chase_cps`` and return its
+    ``axiom`` and passed as the ``context`` of every check below, which
+    reads the contracts on the traces it allows. The checks run nuXmv through ``chase_cps`` and return its
     results, with a status, the counterexample or witness trace, and the
     core. Requires ``chase_cps``; see :func:`unavailable_reason`.
     """
@@ -540,76 +546,75 @@ class ChaseSession:
             variables.update(c.variables)
         return variables
 
-    def on_traces(self, ident: str) -> Any:
-        """The contract with the finite-trace axiom as one more assumption.
-
-        Refinement and redundancy read this contract exactly: both are
-        implications whose premise contains the assumptions, so the axiom
-        restricts them to the encodings of finite traces.
-        """
-        c = self.contracts[ident]
-        if not self.axiom:
+    def _in_context(self, c: Any) -> Any:
+        """``c`` with the axiom's variables declared, so the axiom can be its context."""
+        missing = {k: v for k, v in self._axiom_vars.items() if k not in c.variables}
+        if not missing:
             return c
         return self._cps.Contract(
             c.name,
             dict(c.inputs),
-            {**self._axiom_vars, **c.outputs},
-            [*self.axiom, *c.assumptions],
+            {**missing, **c.outputs},
+            list(c.assumptions),
             list(c.guarantees),
         )
+
+    def _context(self) -> dict:
+        return {"context": self.axiom} if self.axiom else {}
 
     def verify(self, ident: str, **options: Any) -> Any:
         """Compatibility and consistency of a contract (``chase_cps.verify``).
 
-        On finite traces compatibility is ``axiom & A`` satisfiable and
-        consistency ``axiom & (A -> G)`` satisfiable. CHASE's consistency
-        check, ``A -> G`` satisfiable, would hold on any word that breaks
-        the axiom, so it runs on the contract ``(true, axiom & (A -> G))``.
+        The finite-trace axiom is the ``context`` of the check: a word that
+        breaks it is no behaviour at all, so compatibility is ``axiom & A``
+        satisfiable and consistency ``axiom & (A -> G)`` satisfiable. Taken
+        as an assumption instead, the axiom would let consistency hold on
+        any word that breaks it.
         """
-        cps = self._cps
-        if not self.axiom:
-            return cps.verify(self.contracts[ident], **options)
-        c = self.on_traces(ident)
-        whole = cps.Contract(
-            c.name,
-            dict(c.inputs),
-            dict(c.outputs),
-            [],
-            [*self.axiom, self.contracts[ident].saturated_guarantee],
-        )
-        return cps.Verification(
-            cps.is_compatible(c, **options), cps.is_consistent(whole, **options)
-        )
+        c = self._in_context(self.contracts[ident])
+        return self._cps.verify(c, **self._context(), **options)
 
     def refines(self, refined: str, abstract: str, **options: Any) -> Any:
-        """Whether ``refined`` refines ``abstract`` (``chase_cps.refines``)."""
-        return self._cps.refines(self.on_traces(refined), self.on_traces(abstract), **options)
+        """Whether ``refined`` refines ``abstract`` (``chase_cps.refines``).
+
+        The axiom is the context. Added to the assumptions of both contracts
+        it gives the same verdict, since both refinement conditions are
+        implications whose premise holds the assumptions, but the context
+        keeps the contracts as they were exported and the axiom out of the
+        terms a counterexample is read against.
+        """
+        r, a = self._in_context(self.contracts[refined]), self._in_context(self.contracts[abstract])
+        return self._cps.refines(r, a, **self._context(), **options)
 
     def remove_redundant(self, ident: str, **options: Any) -> Any:
-        """The contract without the terms implied by the others (``chase_cps.remove_redundant``)."""
-        r = self._cps.remove_redundant(self.on_traces(ident), **options)
-        r.contract.assumptions = [t for t in r.contract.assumptions if t not in self.axiom]
-        r.removed_assumptions = [t for t in r.removed_assumptions if t not in self.axiom]
-        return r
+        """The contract without the terms implied by the others (``chase_cps.remove_redundant``).
+
+        The axiom is the context: a term is redundant when the others imply
+        it on finite traces, and the axiom, not being a term of the
+        contract, is never removed or returned.
+        """
+        c = self._in_context(self.contracts[ident])
+        return self._cps.remove_redundant(c, **self._context(), **options)
 
     def unsat_core(self, idents: Sequence[str] | None = None, **options: Any) -> Any:
         """A minimal set of terms of the contracts that cannot hold together.
 
         The terms are the assumptions and the guarantees of the contracts,
-        the conjunction :func:`contragent.analysis.check_conflicts` checks,
-        with the finite-trace axiom as an assumption; ``chase_cps.unsat_core``
-        returns a contract with the terms of the core, and
-        :meth:`contracts_in` names the contracts they come from.
+        the conjunction :func:`contragent.analysis.check_conflicts` checks.
+        The finite-trace axiom is the context of every test, so it never
+        appears in the core; ``chase_cps.unsat_core`` returns a contract
+        with the terms of the core, and :meth:`contracts_in` names the
+        contracts they come from.
         """
         chosen = [self.contracts[i] for i in (idents or self.contracts)]
         library = self._cps.Contract(
             "library",
             {},
             self._variables(chosen),
-            [*self.axiom, *(t for c in chosen for t in c.assumptions)],
+            [t for c in chosen for t in c.assumptions],
             [t for c in chosen for t in c.guarantees],
         )
-        return self._cps.unsat_core(library, **options)
+        return self._cps.unsat_core(library, **self._context(), **options)
 
     def contracts_in(self, core: Any, idents: Sequence[str] | None = None) -> list[str]:
         """The identifiers of the contracts an :meth:`unsat_core` core comes from.

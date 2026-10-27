@@ -29,7 +29,8 @@ def _nuxmv_present() -> bool:
 
 
 needs_chase = pytest.mark.skipif(
-    not _nuxmv_present(), reason="requires chase_cps (CHASE's Python package) and nuXmv"
+    not _nuxmv_present(),
+    reason="requires chase_cps (CHASE's Python package) whose checks take context=, and nuXmv",
 )
 
 

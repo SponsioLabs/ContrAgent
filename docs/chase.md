@@ -60,11 +60,13 @@ CHASE conjunction over contracts on one agent. The finite-trace axiom of a
 the contracts on the traces it allows. `unsat_core` searches the assumptions and
 the guarantees of the contracts, the conjunction `contragent conflicts` checks.
 
-The session needs `chase_cps` 0.2.0 or later, the first release that gives each
-contract the declarations shared at the top of the specification:
+The session passes the finite-trace axiom as the `context` of each check, so
+it needs a `chase_cps` whose checks take `context=`, released after 0.2.0. Until
+that release, install the `contract-ops` branch (it compiles CHASE, which needs
+Boost and CMake):
 
 ```bash
-pip install 'contragent[chase]'       # or: pip install 'chase-cps>=0.2.0'
+pip install 'chase-cps @ git+https://github.com/chase-cps/chase@contract-ops'
 chase-cps install nuxmv --accept-license
 ```
 
