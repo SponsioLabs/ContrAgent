@@ -102,7 +102,11 @@ messages: list[dict] = [{"role": "user", "content": "Send $250 to ACME for custo
 while True:
     proposal = model(messages)
     if proposal is None:
-        break
+        check = guard.guard_finish()  # what is still owed is prompted for, at most twice
+        if check.allowed:
+            break
+        messages.append({"role": "user", "content": check.prompt})
+        continue
     name, args = proposal
 
     output = tools[name](**args)  # a refused call returns the refusal text instead

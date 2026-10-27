@@ -30,6 +30,7 @@ from contragent.formulas.formula import (
     Const,
     F,
     G,
+    Implies,
     Le,
     Not,
     Or,
@@ -167,11 +168,19 @@ class TestProgressionX:
         assert dfa.peek() == "?"
         assert dfa.step({"called(x)": True}) == "⊤"
 
-    def test_x_finalize_weak_next(self):
-        """X(φ) unresolved at session end = vacuously True (weak next)."""
-        dfa = DFAEvaluator(X(Atom("called", "x")))
-        # Zero events: X is still pending → finalize = ⊤
+    def test_x_finalize_reads_the_idle_event(self):
+        """An X unresolved at session end reads the idle event after it."""
+        # No tool is called after the end: an obligation to call x fails,
+        # a prohibition on calling x holds.
+        assert DFAEvaluator(X(Atom("called", "x"))).finalize() == "⊥"
+        assert DFAEvaluator(X(Not(Atom("called", "x")))).finalize() == "⊤"
+        # The state stays what it was at the last event.
+        dfa = DFAEvaluator(G(Implies(Atom("called", "login"), X(Atom("ctx", "auth", "yes")))))
+        dfa.step({"called(login)": True, "ctx(auth, yes)": True})
         assert dfa.finalize() == "⊤"
+        dfa.reset()
+        dfa.step({"called(login)": True})
+        assert dfa.finalize() == "⊥"
 
 
 class TestProgressionArithmetic:

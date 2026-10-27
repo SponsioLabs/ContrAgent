@@ -176,14 +176,21 @@ class TestSemantics:
             _contracts(
                 (
                     "G(!(output_has('a', 'SECRET')))",
-                    "G((called('a') -> F(called('b'))))",
+                    "G((called('a') -> (F(called('b')) & X(ctx('auth', 'yes')))))",
                 )
             )
         )
         assert f"CONTRACT {FINITE_TRACE_CONTRACT}:" in text
         assert "(alive /\\ (alive U (G (! alive))))" in text
-        assert "(G (alive -> (p_called_a -> (F (alive /\\ p_called_b)))))" in text
+        # A G binds the session; what is still owed is read after the end.
+        assert "(G (alive -> (p_called_a -> ((F p_called_b) /\\ (X p_ctx_auth_yes)))))" in text
         assert "  Assumptions:\n    (G (alive -> (! p_output_has_a_SECRET)));" in text
+        # After the end no event predicate holds and the state is kept.
+        assert (
+            "(G ((! alive) -> ((! p_output_has_a_SECRET) /\\ (! p_called_a) /\\ (! p_called_b))));"
+            in text
+        )
+        assert "(G ((X (! alive)) -> ((p_ctx_auth_yes <-> (X p_ctx_auth_yes)))));" in text
 
     def test_infinite_exports_formulas_verbatim(self):
         text = export_logics(

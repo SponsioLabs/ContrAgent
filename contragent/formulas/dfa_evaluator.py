@@ -44,7 +44,7 @@ Typical use::
         verdict = dfa.step(event_valuation)  # "⊤" | "⊥" | "?"
         if verdict == "⊥":
             break   # violated, no point continuing
-    final = dfa.finalize()               # "⊤" | "⊥" (weak finite semantics)
+    final = dfa.finalize()               # "⊤" | "⊥" (the session ended here)
 """
 
 from __future__ import annotations
@@ -52,6 +52,8 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from contragent.formulas._compare import coerce_ordered
+from contragent.formulas._pred_key import idle_valuation
+from contragent.formulas.evaluator import holds_idle
 from contragent.formulas.formula import (
     And,
     Atom,
@@ -367,56 +369,15 @@ def _progress(node: Residual, state: dict[str, object]) -> Residual:
 
 
 # ---------------------------------------------------------------------------
-# Internal: session-end collapse (weak finite-trace semantics)
+# Internal: session-end verdict
 # ---------------------------------------------------------------------------
-
-
-def _finalize(node: Residual) -> Residual:
-    """Collapse a residual formula under weak finite-trace semantics.
-
-    Pending temporal obligations become:
-
-    * ``G(_)`` → ``True``   (vacuously true on empty remaining suffix)
-    * ``F(_)`` → ``False``  (never discharged)
-    * ``X(_)`` → ``True``   (weak-next: vacuously true past trace end)
-    * ``φ U ψ`` → ``False`` (ψ never became true before end)
-
-    Atoms and arithmetic nodes that happen to still be in the residual
-    (rare in practice; shouldn't occur for well-formed LTL at session
-    end) collapse to ``False`` under weak semantics as a safe default.
-    """
-    if isinstance(node, bool):
-        return node
-
-    if isinstance(node, G):
-        return True
-    if isinstance(node, F):
-        return False
-    if isinstance(node, X):
-        return True
-    if isinstance(node, U):
-        return False
-
-    if isinstance(node, Not):
-        inner = _finalize(node.child)
-        if isinstance(inner, bool):
-            return not inner
-        return Not(inner)
-
-    if isinstance(node, And):
-        return _simplify(And(_finalize(node.left), _finalize(node.right)))
-
-    if isinstance(node, Or):
-        return _simplify(Or(_finalize(node.left), _finalize(node.right)))
-
-    if isinstance(node, Implies):
-        return _simplify(Implies(_finalize(node.left), _finalize(node.right)))
-
-    # Atom / arithmetic residuals shouldn't survive to finalize in
-    # practice — progression consumes them at each step. If they do
-    # somehow, we can't evaluate them without a valuation, so treat
-    # them conservatively: collapse to False (weak semantics).
-    return False
+#
+# The residual is what the rest of the trace still owes. When the session
+# ends, what it owes is read on idle events after the last one: no tool is
+# called and the state stays what it was, while a ``G`` binds the events of
+# the session only (:func:`contragent.formulas.evaluator.holds_idle`). This
+# is the reading of :func:`contragent.formulas.evaluator.evaluate_final` and
+# of the satisfiability search.
 
 
 def _to_verdict(residual: Residual) -> Verdict3:
@@ -462,13 +423,16 @@ class DFAEvaluator:
                 print("violation!")
                 break
 
-        end_verdict = dfa.finalize()  # collapses "?" to "⊥" / "⊤"
+        end_verdict = dfa.finalize()  # decides "?" as if the session ended
     """
 
     def __init__(self, formula: Formula) -> None:
         self._initial: Residual = _simplify(formula)
         self._residual: Residual = self._initial
         self._steps_consumed: int = 0
+        # The last event's valuation: the state the idle events after the
+        # end of the session keep (see :meth:`finalize`).
+        self._last: dict[str, object] = {}
 
     # -----------------------------------------------------------------
     # Core stepping API
@@ -480,6 +444,7 @@ class DFAEvaluator:
         Once the residual has collapsed to ``True`` / ``False``, further
         calls are O(1) no-ops that keep returning the same verdict.
         """
+        self._last = valuation
         if self._residual is True or self._residual is False:
             self._steps_consumed += 1
             return _to_verdict(self._residual)
@@ -494,30 +459,24 @@ class DFAEvaluator:
         return _to_verdict(self._residual)
 
     def finalize(self) -> Verdict3:
-        """Session-end: collapse pending temporal obligations via weak semantics.
+        """Session-end verdict: the residual on idle events after the last one.
 
-        Does **not** mutate the internal state — safe to call multiple
-        times. Use this for :meth:`ContrAgent.finish_session` style
-        checks where the trace is final.
+        After the session no tool is called and the state stays what it
+        was at the last event, so a pending ``X(called(t))``, ``F``, or
+        ``U`` fails, a pending prohibition holds, a pending ``X`` over a
+        fact reads the fact as it was last, and a ``G`` has held over the
+        session. Does **not** mutate the internal state; safe to call
+        multiple times.
 
-        Returns ``"⊤"`` if all obligations were discharged (or vacuous),
-        ``"⊥"`` otherwise.
+        Returns ``"⊤"`` or ``"⊥"``.
         """
-        collapsed = _finalize(self._residual)
-        simplified = _simplify(collapsed)
-        # Finalize should always collapse to a bool under well-formed LTL.
-        if simplified is True:
-            return "⊤"
-        if simplified is False:
-            return "⊥"
-        # Defensive fallback: unexpected residual — conservative ⊥.
-        return "⊥"
+        return "⊤" if holds_idle(self._residual, idle_valuation(self._last)) else "⊥"
 
     # -----------------------------------------------------------------
     # Snapshot / restore (for dry-run, rollback, session reset)
     # -----------------------------------------------------------------
 
-    def snapshot(self) -> tuple[Residual, int]:
+    def snapshot(self) -> tuple[Residual, int, dict[str, object]]:
         """Return an immutable snapshot of the current state.
 
         Formula AST nodes are frozen dataclasses, so the residual tuple
@@ -525,16 +484,17 @@ class DFAEvaluator:
         :meth:`restore` — enabling dry-run / what-if evaluation without
         mutating live state.
         """
-        return (self._residual, self._steps_consumed)
+        return (self._residual, self._steps_consumed, self._last)
 
-    def restore(self, snap: tuple[Residual, int]) -> None:
+    def restore(self, snap: tuple[Residual, int, dict[str, object]]) -> None:
         """Restore a previously captured snapshot."""
-        self._residual, self._steps_consumed = snap
+        self._residual, self._steps_consumed, self._last = snap
 
     def reset(self) -> None:
         """Rewind to the initial state (before any events)."""
         self._residual = self._initial
         self._steps_consumed = 0
+        self._last = {}
 
     # -----------------------------------------------------------------
     # Introspection

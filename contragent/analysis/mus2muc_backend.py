@@ -112,9 +112,12 @@ def _node_to_str(node: Node) -> str:
 
     Propositions are emitted as generated lowercase symbols ``p<i>``
     (atom keys like ``called(x)`` contain characters the grammar cannot
-    quote). ``X`` is emitted as ``WX`` because ContrAgent's runtime
-    ``X`` has weak-next semantics at trace end; ``G``/``F``/``U``
-    coincide with standard LTLf on non-empty finite traces.
+    quote). ``X`` is emitted as ``WX``, so the enumeration reads a trace
+    in standard LTLf with a weak next. ContrAgent's own verdict reads an
+    obligation still pending at the end on idle events after it (no call,
+    the state kept; see :func:`contragent.formulas.evaluator.evaluate_final`),
+    which this serialization does not encode: on a library whose cores
+    turn on what is owed at the end, the native backend is the reference.
     """
     if node is True:
         # No boolean constants in the grammar; (p0 | !p0) is valid but

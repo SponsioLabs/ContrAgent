@@ -59,14 +59,20 @@ strictly between two consecutive integer constants has no counterpart.
 Finite traces
 -------------
 CHASE's back ends reason over infinite words while ContrAgent's monitors
-evaluate LTL\\ :sub:`f` on finite traces. With ``semantics="finite"`` (the
-default) the export applies the standard LTL\\ :sub:`f`-to-LTL translation
-with a fresh proposition ``alive`` (De Giacomo and Vardi, 2013):
-``X`` becomes the weak ``X(alive -> .)`` used by the runtime, ``U``
-becomes ``. U (alive /\\ .)``, ``F`` becomes ``F(alive /\\ .)``, ``G``
-becomes ``G(alive -> .)``, and a contract ``finite`` asserts
-``alive /\\ (alive U G(!alive))``. With ``semantics="infinite"`` the
-formulas are exported unchanged.
+evaluate LTL\\ :sub:`f` on finite traces. ContrAgent decides a finished
+session by reading what it still owes on idle events after the last one:
+no tool is called and the state stays what it was, while a ``G`` binds the
+events of the session (:func:`contragent.formulas.evaluator.evaluate_final`).
+With ``semantics="finite"`` (the default) the export writes that reading
+with a fresh proposition ``alive`` that marks the events of the session:
+``G`` becomes ``G(alive -> .)``, ``X``, ``F``, and ``U`` are kept, and a
+contract ``finite`` asserts ``alive /\\ (alive U G(!alive))``, that every
+event proposition (a call, its arguments, an LLM message) is false once
+``alive`` is, and that every state proposition and every relation over
+state quantities keeps its value from the last event of the session on.
+A relation over the arguments of a call is left free after the end, so a
+check over the export allows those idle values the runtime reads as
+missing. With ``semantics="infinite"`` the formulas are exported unchanged.
 
 Usage
 -----
@@ -98,6 +104,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from contragent.formulas._pred_key import EVENT_PREDICATES
 from contragent.formulas.formula import (
     And,
     ArgLength,
@@ -165,6 +172,8 @@ class _Symbols:
     links: dict[str, set[str]] = field(default_factory=dict)  # ident -> compared integers
     saturating: set[str] = field(default_factory=set)
     nonnegative: set[str] = field(default_factory=set)  # lengths: never below 0
+    event_propositions: set[str] = field(default_factory=set)  # false after the end
+    state_relations: dict[str, None] = field(default_factory=dict)  # kept after the end
 
     def proposition(self, ident: str, comment: str) -> str:
         self.propositions.setdefault(ident, comment)
@@ -271,6 +280,8 @@ def _term(term: Any, sym: _Symbols) -> tuple[str, str | None]:
 
 
 def _relation(node: Any, op: str, sym: _Symbols) -> str:
+    from contragent.formulas.sat import _term_is_event
+
     left, lvar = _term(node.left, sym)
     right, rvar = _term(node.right, sym)
     if lvar and isinstance(node.right, Const):
@@ -279,13 +290,18 @@ def _relation(node: Any, op: str, sym: _Symbols) -> str:
         sym.note_constant(rvar, node.left.value)
     if lvar and rvar:
         sym.note_link(lvar, rvar)
-    return f"({left} {op} {right})"
+    text = f"({left} {op} {right})"
+    if True not in (_term_is_event(node.left), _term_is_event(node.right)):
+        sym.state_relations.setdefault(text, None)
+    return text
 
 
 def _formula(node: Any, sym: _Symbols, finite: bool) -> str:
     """Translate one formula node into CHASE logics syntax."""
     if isinstance(node, Atom):
         ident = _ident("p", node.predicate, *node.args)
+        if node.predicate in EVENT_PREDICATES:
+            sym.event_propositions.add(ident)
         return sym.proposition(ident, node.key())
     if isinstance(node, Subset):
         ident = _ident("subset", node.left, node.right)
@@ -302,15 +318,11 @@ def _formula(node: Any, sym: _Symbols, finite: bool) -> str:
         body = _formula(node.child, sym, finite)
         return f"(G (alive -> {body}))" if finite else f"(G {body})"
     if isinstance(node, F):
-        body = _formula(node.child, sym, finite)
-        return f"(F (alive /\\ {body}))" if finite else f"(F {body})"
+        return f"(F {_formula(node.child, sym, finite)})"
     if isinstance(node, X):
-        body = _formula(node.child, sym, finite)
-        return f"(X (alive -> {body}))" if finite else f"(X {body})"
+        return f"(X {_formula(node.child, sym, finite)})"
     if isinstance(node, U):
-        left = _formula(node.left, sym, finite)
-        right = _formula(node.right, sym, finite)
-        return f"({left} U (alive /\\ {right}))" if finite else f"({left} U {right})"
+        return f"({_formula(node.left, sym, finite)} U {_formula(node.right, sym, finite)})"
     if isinstance(node, Le):
         return _relation(node, "<=", sym)
     if isinstance(node, Lt):
@@ -394,12 +406,23 @@ def export_logics(
             out.append(f"integer ({lo}:{hi}) variable {ident};  # {_comment(comment)}{note}")
     out.append("")
     if finite:
-        out.append("# Finite-trace axiom: a non-empty prefix, then alive is false forever.")
+        out.append("# Finite-trace axiom: a non-empty session, then idle events forever, at which")
+        out.append("# no event predicate holds and the state stays what it was at the last event.")
         out.append(f"CONTRACT {FINITE_TRACE_CONTRACT}:")
         out.append("  Assumptions:")
         out.append("    true;")
         out.append("  Guarantees:")
         out.append("    (alive /\\ (alive U (G (! alive))));")
+        events = [p for p in sym.propositions if p in sym.event_propositions]
+        if events:
+            none = " /\\ ".join(f"(! {p})" for p in events)
+            out.append(f"    (G ((! alive) -> ({none})));")
+        kept = [
+            p for p in sym.propositions if p != "alive" and p not in sym.event_propositions
+        ] + list(sym.state_relations)
+        if kept:
+            same = " /\\ ".join(f"({k} <-> (X {k}))" for k in kept)
+            out.append(f"    (G ((X (! alive)) -> ({same})));")
         out.append("")
     for ec in exported:
         out.append(f"# {_comment(ec.desc)}")

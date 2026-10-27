@@ -7,9 +7,11 @@ Supports all three formula families:
 
 - **Propositional** (Atom, Not, And, Or, Implies): standard boolean logic.
   ``Atom.key()`` is looked up in the current timestep's dict.
-- **Temporal / LTL** (G, F, X, U): recursive evaluation using *weak
-  finite-trace semantics* -- at the end of the trace, ``G`` is vacuously
-  true and ``F`` is vacuously false.
+- **Temporal / LTL** (G, F, X, U): recursive evaluation on a trace that
+  may still grow (:func:`evaluate`): at its end ``G`` and a pending ``X``
+  hold, ``F`` and ``U`` do not. :func:`evaluate_final` gives the verdict
+  once the session is over, when what is still owed is read on idle
+  events after the last one.
 - **Arithmetic** (Le, Lt, Ge, Gt, Eq): resolve ``Var``/``Const`` to
   numbers, then compare.
 """
@@ -195,7 +197,9 @@ def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> 
     * Arithmetic variables: ``key -> int | float``
     * Set relations: ``key -> bool``
 
-    Temporal semantics use **weak finite-trace** interpretation:
+    Temporal semantics use the **weak finite-trace** interpretation, the
+    reading of a trace that may still grow (a pending ``X`` is not a
+    violation yet); :func:`evaluate_final` decides a finished session:
 
     * ``G(phi)``: *phi* holds at all positions from *pos* to end.
     * ``F(phi)``: *phi* holds at some position from *pos* to end.
@@ -312,3 +316,92 @@ def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> 
         return bool(state.get(formula.key(), False))
 
     raise TypeError(f"Unknown formula type: {type(formula)}")
+
+
+# ---------------------------------------------------------------------------
+# End-of-session verdict
+# ---------------------------------------------------------------------------
+#
+# :func:`evaluate` reads a trace that may still grow: a pending ``X`` is not
+# a violation yet. Once the session is over, an obligation still pending
+# (the next event of an ``X``, the event an ``F`` or a ``U`` waits for) is
+# read on the idle events that follow the end: no tool is called and the
+# state stays what it was at the last event (see
+# :func:`contragent.formulas._pred_key.idle_valuation`). An obligation to
+# act is then violated, a prohibition kept, and a fact read as it was last.
+# A ``G`` binds the events of the session only. The runtime monitor
+# (:meth:`contragent.formulas.dfa_evaluator.DFAEvaluator.finalize`) and the
+# satisfiability search (:mod:`contragent.formulas.sat`) decide the same
+# verdict.
+
+
+def holds_idle(formula: object, idle: dict[str, object]) -> bool:
+    """Whether ``formula``, due after the session ended, holds on its idle events.
+
+    ``idle`` is the idle event, repeated forever. Every position of that
+    constant word sees the same future, so ``F`` and ``X`` of a formula
+    reduce to the formula itself and ``φ U ψ`` to ``ψ``; a ``G`` binds the
+    events of the session only and holds.
+    """
+    if isinstance(formula, bool):
+        return formula
+    if isinstance(formula, G):
+        return True
+    if isinstance(formula, (F, X)):
+        return holds_idle(formula.child, idle)
+    if isinstance(formula, U):
+        return holds_idle(formula.right, idle)
+    if isinstance(formula, Not):
+        return not holds_idle(formula.child, idle)
+    if isinstance(formula, And):
+        return holds_idle(formula.left, idle) and holds_idle(formula.right, idle)
+    if isinstance(formula, Or):
+        return holds_idle(formula.left, idle) or holds_idle(formula.right, idle)
+    if isinstance(formula, Implies):
+        return not holds_idle(formula.left, idle) or holds_idle(formula.right, idle)
+    return evaluate(formula, [idle])
+
+
+def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> bool:
+    """The end-of-session verdict of ``formula`` on the trace from ``pos``.
+
+    An obligation still pending at the end is read on the idle events
+    that follow it (see the note above): an ``X`` at the last event reads
+    the first of them, and ``F`` and ``U`` may be met on them; a ``G``
+    binds the events of the trace. On an empty trace the idle event
+    carries no state.
+    """
+    from contragent.formulas._pred_key import idle_valuation
+
+    n = len(trace)
+    idle = idle_valuation(trace[-1]) if trace else {}
+
+    def ev(f: object, i: int) -> bool:
+        if i >= n:
+            return holds_idle(f, idle)
+        if isinstance(f, bool):
+            return f
+        if isinstance(f, Not):
+            return not ev(f.child, i)
+        if isinstance(f, And):
+            return ev(f.left, i) and ev(f.right, i)
+        if isinstance(f, Or):
+            return ev(f.left, i) or ev(f.right, i)
+        if isinstance(f, Implies):
+            return not ev(f.left, i) or ev(f.right, i)
+        if isinstance(f, G):
+            return all(ev(f.child, j) for j in range(i, n))
+        if isinstance(f, F):
+            return any(ev(f.child, j) for j in range(i, n)) or holds_idle(f.child, idle)
+        if isinstance(f, X):
+            return ev(f.child, i + 1)
+        if isinstance(f, U):
+            for j in range(i, n):
+                if ev(f.right, j):
+                    return True
+                if not ev(f.left, j):
+                    return False
+            return holds_idle(f.right, idle)
+        return evaluate(f, trace, i)
+
+    return ev(formula, pos)

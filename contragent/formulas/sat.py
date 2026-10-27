@@ -11,13 +11,17 @@ legal environment exists, then extract a minimal unsatisfiable core of
 Semantics
 ---------
 Satisfiability is decided against the *runtime's* finite-trace
-semantics — the same progression rules and weak end-of-trace collapse
-implemented by :class:`contragent.formulas.dfa_evaluator.DFAEvaluator`
-(``G`` → ⊤, ``F`` → ⊥, ``X`` → ⊤ weak-next, ``U`` → ⊥ at trace end).
-A formula is satisfiable iff some trace of length ≥ 1 makes the
-runtime monitor finish the session without a violation. Matching the
-monitor, not textbook LTLf, is deliberate: a "conflict" only matters
-if the enforced semantics can never be jointly met.
+semantics: the progression rules of
+:class:`contragent.formulas.dfa_evaluator.DFAEvaluator`, and its verdict
+at the end of the session, which reads an obligation still pending
+(``X``, ``F``, ``U``) on idle events after the last one (no tool is
+called, the state stays what it was) while a ``G`` binds the events of
+the session only. An obligation to call a tool then fails and a
+prohibition holds. A formula is satisfiable iff
+some trace of length ≥ 1 makes the runtime monitor finish the session
+without a violation. Matching the monitor, not textbook LTLf, is
+deliberate: a "conflict" only matters if the enforced semantics can never
+be jointly met.
 
 Abstraction
 -----------
@@ -61,14 +65,15 @@ The search itself is an explicit reachability walk over progression
 residuals: states are canonicalized residual formulas (n-ary And/Or
 over ``frozenset`` so conjunct order and duplicates never mint new
 states), transitions are one progression step per abstract valuation,
-and a state is accepting when its weak finalization collapses to ⊤.
+and a trace may end after a transition when the reached residual holds
+on idle events after that transition's valuation.
 This is exact for the abstraction; the caps only bound runtime.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from itertools import combinations, product
 from typing import Any
 
@@ -127,7 +132,7 @@ def _mk_not(node: Node) -> Node:
         return _mk_and(_mk_not(x) for x in node[1])
     # Temporal node: keep the negation wrapped so progression and
     # finalization compose exactly like the runtime evaluator's
-    # ``Not(...)`` handling (weak-collapse duality included).
+    # ``Not(...)`` handling, at the end of the trace included.
     return ("not", node)
 
 
@@ -463,7 +468,7 @@ def _abstract(formula: Any, table: _LeafTable, negated: bool = False) -> Node:
 
 
 # ---------------------------------------------------------------------------
-# Progression + weak finalization (mirrors dfa_evaluator semantics)
+# Progression and the end-of-trace verdict (the runtime monitor's semantics)
 # ---------------------------------------------------------------------------
 
 
@@ -497,30 +502,106 @@ def _progress(node: Node, val: frozenset[int]) -> Node:
     raise TypeError(f"_progress: unknown node tag {tag!r}")  # pragma: no cover
 
 
-def _finalize(node: Node) -> Node:
-    """Collapse pending obligations at trace end (weak semantics)."""
+def _finalize(node: Node, idle: Callable[[int], bool | None]) -> Node:
+    """The verdict of ``node`` if the trace ends here.
+
+    An obligation still pending is read on the idle events after the
+    end (no tool is called, the state stays what it was at the last
+    event; see :func:`contragent.formulas._pred_key.idle_valuation`), the
+    reading of :meth:`contragent.formulas.dfa_evaluator.DFAEvaluator.finalize`:
+    on that constant word ``F`` and ``X`` of a node reduce to the node and
+    ``φ U ψ`` to ``ψ``, and a ``G`` binds the events of the trace only and
+    holds. ``idle(pid)`` is the truth of a
+    proposition at an idle event, or ``None`` when the abstraction does
+    not determine it; such a node returns ``None`` unless the known
+    propositions decide it.
+    """
     if node is True or node is False:
         return node
     tag = node[0]
     if tag == "lit":
-        # Mirrors the runtime: a bare state-formula residual at trace
-        # end cannot be evaluated without a valuation → conservative ⊥.
-        return False
+        v = idle(abs(node[1]))
+        return v if v is None or node[1] > 0 else not v
     if tag == "and":
-        return _mk_and(_finalize(x) for x in node[1])
+        parts = [_finalize(x, idle) for x in node[1]]
+        if False in parts:
+            return False
+        return None if None in parts else True
     if tag == "or":
-        return _mk_or(_finalize(x) for x in node[1])
+        parts = [_finalize(x, idle) for x in node[1]]
+        if True in parts:
+            return True
+        return None if None in parts else False
     if tag == "not":
-        return _mk_not(_finalize(node[1]))
+        v = _finalize(node[1], idle)
+        return v if v is None else not v
     if tag == "G":
         return True
-    if tag == "F":
-        return False
-    if tag == "X":
-        return True
+    if tag in ("F", "X"):
+        return _finalize(node[1], idle)
     if tag == "U":
-        return False
+        return _finalize(node[2], idle)
     raise TypeError(f"_finalize: unknown node tag {tag!r}")  # pragma: no cover
+
+
+def _term_is_event(term: Any) -> bool | None:
+    """Whether a term reads the current event (``None`` for a constant).
+
+    ``ArgValue``/``ArgLength`` read the arguments of the current call, and
+    a ``Var`` is an event term when its predicate is one of
+    :data:`contragent.formulas._pred_key.EVENT_PREDICATES`; counters,
+    ``CtxValue``, and the clock read the state.
+    """
+    from contragent.formulas._pred_key import EVENT_PREDICATES, predicate_of
+    from contragent.formulas.formula import ArgLength, ArgValue, Const, UnaryFn, Var
+
+    if isinstance(term, Const):
+        return None
+    if isinstance(term, (ArgValue, ArgLength)):
+        return True
+    if isinstance(term, Var):
+        return predicate_of(term.key()) in EVENT_PREDICATES
+    if isinstance(term, UnaryFn):
+        return _term_is_event(term.arg)
+    return False
+
+
+def _idle_props(table: _LeafTable, val: frozenset[int]) -> Callable[[int], bool | None]:
+    """The truth of each proposition at an idle event after an event with ``val``.
+
+    An event atom is false and a state atom keeps its value. A comparison
+    over state terms keeps its value; one over event terms is evaluated
+    with them missing, as at an event with no call; one that mixes both
+    is not determined by the abstraction (``None``).
+    """
+    from contragent.formulas._pred_key import EVENT_PREDICATES, predicate_of
+    from contragent.formulas.dfa_evaluator import _resolve_arith, _safe_compare
+
+    atom_pids = {pid: key for key, pid in table.atom_ids.items()}
+    cache: dict[int, bool | None] = {}
+
+    def idle(pid: int) -> bool | None:
+        if pid in cache:
+            return cache[pid]
+        if pid in atom_pids:
+            v: bool | None = (
+                False if predicate_of(atom_pids[pid]) in EVENT_PREDICATES else pid in val
+            )
+        elif pid in table.cmp_info:
+            op, left, right, _total = table.cmp_info[pid]
+            kinds = {_term_is_event(left), _term_is_event(right)} - {None}
+            if kinds == {True}:
+                v = _safe_compare(op, _resolve_arith(left, {}), _resolve_arith(right, {}))
+            elif True in kinds:
+                v = None
+            else:
+                v = pid in val
+        else:
+            v = pid in val
+        cache[pid] = v
+        return v
+
+    return idle
 
 
 # ---------------------------------------------------------------------------
@@ -712,12 +793,13 @@ def is_satisfiable(
                 return True
             if nxt is False:
                 continue
-            # ``nxt`` is reachable after >= 1 events: accepting iff its
-            # weak end-of-trace collapse discharges every obligation.
-            # Checked before the ``seen`` dedup because the *root* enters
-            # ``seen`` at depth 0 (empty trace, never finalize-checked);
-            # a self-loop like G(a) must still be able to accept here.
-            if _finalize(nxt) is True:
+            # ``nxt`` is reachable after >= 1 events: accepting iff the
+            # trace may end here, read on idle events after ``full_val``
+            # (an undetermined verdict accepts, which keeps an UNSAT answer
+            # sound). Checked before the ``seen`` dedup because the *root*
+            # enters ``seen`` at depth 0 (empty trace, never checked), and
+            # the verdict depends on the last event, which ``seen`` drops.
+            if _finalize(nxt, _idle_props(table, full_val)) is not False:
                 return True
             state = (nxt, regs2)
             if state in seen:

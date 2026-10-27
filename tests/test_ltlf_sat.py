@@ -90,11 +90,15 @@ class TestTemporal:
         formulas = [F(A), F(B), G(Implies(A, X(B))), G(Implies(B, X(A)))]
         assert is_satisfiable(formulas) is False
 
-    def test_trailing_next_is_weak(self):
-        # An un-consumed X at trace end collapses to ⊤ (weak next),
-        # mirroring dfa_evaluator._finalize: X(X(a)) is satisfied by a
-        # single-event trace because the inner X is never even peeled.
-        assert is_satisfiable(And(X(X(A)), G(Not(A)))) is True
+    def test_trailing_next_reads_the_idle_events(self):
+        # An X still pending at the end reads the idle events after it,
+        # at which no tool is called: X(X(a)) needs a call of a two events
+        # on, which G(!a) forbids within the trace and the end rules out.
+        assert is_satisfiable(And(X(X(A)), G(Not(A)))) is False
+        # No tool is called after the end, so a pending prohibition holds.
+        assert is_satisfiable(X(X(Not(Atom("called", "t"))))) is True
+        assert is_satisfiable(X(X(Atom("called", "t")))) is True
+        assert is_satisfiable(And(X(X(Atom("called", "t"))), G(Not(Atom("called", "t"))))) is False
 
     def test_negated_temporal(self):
         assert is_satisfiable(Not(G(A))) is True

@@ -24,6 +24,20 @@ project uses [semantic versioning](https://semver.org/).
   `ChaseSession.from_file` and `from_library` build one from a file or a
   library. `PychaseTranslator` and the console methods `run` and
   `refinement` are gone with the raw `pychase` calls.
+- A finished session is decided the same way by the runtime monitor
+  (`DFAEvaluator.finalize`), the offline replay (the new
+  `contragent.formulas.evaluator.evaluate_final`), the satisfiability
+  and conflict checks, and the CHASE export: what a contract still owes
+  at the end (the next event of an `X`, the event an `F` or a `U` waits
+  for) is read on idle events after the last one, at which no tool is
+  called and the state stays what it was; a `G` binds the events of the
+  session. An obligation to call a tool then fails, a prohibition holds,
+  and a fact reads as it was last. Before, the three readings differed
+  at the end: replay held a pending `X(called(t))`, the monitor failed
+  it but held `X(!called(t))`, the search failed both, and a pending
+  `X(X(called(t)))` held, so stopping early passed. `finish_session`
+  decides every guarantee still owed, an `X` included, not only the
+  liveness ones.
 
 ### Fixed
 - The CHASE export declares every integer with a range. The logics
@@ -50,6 +64,15 @@ project uses [semantic versioning](https://semver.org/).
   `make_contracts`, `render_last_turn`, `register_callback`, ...).
 
 ### Added
+- Prompts. After a call whose contract owes the next event
+  (`G(a -> X b)` once `a` happened), `guard_after` returns a prompt to
+  call `b` next (`CheckResult.prompts` / `.prompt`), which `wrap`
+  appends to a text result. `guard_finish()`, called before the agent
+  stops, returns `allowed=False` with a prompt for every guarantee the
+  end would violate, naming the call that would discharge it, at most
+  `max_prompts` times a session. Both use the format of a refusal
+  ("Policy: …. Call `b` next.") and read the contracts as the end of the
+  session does; `"flag"` mode does not prompt.
 - `ContrAgent(verbose=True)`: the session printed as a timeline as it
   happens (`contragent.console`).
 - `ContrAgent(trace_path=...)` / `save_trace(path)`: the session written

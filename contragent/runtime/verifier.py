@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from contragent.formulas.evaluator import evaluate as eval_formula
+from contragent.formulas.evaluator import evaluate_final
 from contragent.tracer.grounding import (
     GroundingState,
     collect_content_atoms,
@@ -172,6 +173,28 @@ def _raw_formula(constraint: Any) -> Any:
     if isinstance(constraint, DetFormula):
         return constraint.formula
     return constraint
+
+
+def can_owe(constraint: Any) -> bool:
+    """Whether a guarantee can still owe something when the session ends.
+
+    A formula with an ``X``, ``F``, or ``U`` can be left waiting on an
+    event that never comes, and is then decided by the end-of-session
+    check; one with only ``G`` over state formulas is decided event by
+    event.
+    """
+    from contragent.formulas.formula import F, U, X
+
+    def walk(node: Any) -> bool:
+        if isinstance(node, (X, F, U)):
+            return True
+        return any(
+            walk(getattr(node, attr))
+            for attr in ("child", "left", "right")
+            if getattr(node, attr, None) is not None and not isinstance(getattr(node, attr), str)
+        )
+
+    return getattr(constraint, "liveness", False) or walk(_raw_formula(constraint))
 
 
 def _desc(constraint: Any) -> str:
@@ -464,14 +487,16 @@ class TraceVerifier:
         progression monitor). When ``self._backend == "recursive"``,
         falls back to the G-cached recursive walk.
 
-        ``finalize`` is used by the sto / session-end check path to ask
-        "give me the final verdict assuming the trace is complete"
-        (``DFAEvaluator.finalize`` — collapses ``"?"`` to ``"⊥"``).
-        The recursive backend ignores this flag since it uses weak
-        finite-trace semantics uniformly.
+        ``finalize`` is used by the session-end check path to ask for
+        the verdict on the completed trace, read as followed by idle
+        events (no call, the state kept): ``DFAEvaluator.finalize`` on the
+        DFA backend, :func:`~contragent.formulas.evaluator.evaluate_final`
+        on the recursive one, which decide the same verdict.
         """
         if self._backend == "dfa":
             return self._dfa_eval(node, finalize=finalize)
+        if finalize:
+            return evaluate_final(node, self._valuations)
 
         # --- Recursive backend (default) ---
         from contragent.formulas.formula import And, G, Implies, Not, Or
@@ -499,11 +524,11 @@ class TraceVerifier:
         it (catch-up). On subsequent calls, step forward only the new
         events since the last call.
 
-        The ``finalize`` flag asks the DFA to collapse any pending
-        ``?`` verdict using weak finite-trace semantics (used by
-        session-end checks). Runtime checks leave ``?`` as ``True``
-        (i.e., "not yet violated, keep going") to match the current
-        monitor's "skip liveness at runtime" behavior.
+        The ``finalize`` flag asks the DFA to decide any pending ``?``
+        verdict as if the session ended (used by session-end checks).
+        Runtime checks leave ``?`` as ``True`` (i.e., "not yet violated,
+        keep going") to match the monitor's "skip liveness at runtime"
+        behavior.
         """
         from contragent.formulas.dfa_evaluator import DFAEvaluator
 
@@ -660,6 +685,65 @@ class TraceVerifier:
             return True
         return eval_formula(raw_formula, prefix, eval_pos)
 
+    def holds_so_far(self, constraint: Any) -> bool:
+        """Whether the constraint is not yet violated on the trace so far."""
+        return self._incremental_eval(_raw_formula(constraint))
+
+    def holds_at_end(self, constraint: Any) -> bool:
+        """Whether the constraint holds if the session ends now."""
+        return self._incremental_eval(_raw_formula(constraint), finalize=True)
+
+    def probe_valuation(self, event: Any) -> dict:
+        """The valuation ``event`` would ground to if it came next; nothing is recorded.
+
+        A probe is no real call, so the extractions it cannot make (a probe
+        carries no arguments) are neither warned about nor counted among
+        the grounding misses.
+        """
+        import copy
+        import warnings
+
+        from contragent.tracer import grounding
+
+        misses = grounding.GROUNDING_MISSES.copy()
+        warned = set(grounding._MISS_WARNED)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return ground_event(
+                    event,
+                    len(self._valuations),
+                    copy.deepcopy(self._state),
+                    content_atoms=self._last_content_atoms,
+                    agents=self._agents,
+                )
+        finally:
+            grounding.GROUNDING_MISSES.clear()
+            grounding.GROUNDING_MISSES.update(misses)
+            grounding._MISS_WARNED.clear()
+            grounding._MISS_WARNED.update(warned)
+
+    def violated_by(self, constraint: Any, valuation: dict, *, then_end: bool = False) -> bool:
+        """Whether the constraint would be violated if ``valuation`` came next.
+
+        With ``then_end`` the session is read as ending right after it, so
+        what the constraint still owes is decided too. Nothing is recorded.
+        """
+        raw = _raw_formula(constraint)
+        if self._backend == "dfa":
+            self._dfa_eval(raw)
+            dfa = self._dfas[raw]
+            snap = dfa.snapshot()
+            try:
+                verdict = dfa.step(valuation)
+                if then_end:
+                    verdict = dfa.finalize()
+            finally:
+                dfa.restore(snap)
+            return verdict == "⊥"
+        trace = [*self._valuations, valuation]
+        return not (evaluate_final(raw, trace) if then_end else eval_formula(raw, trace))
+
     def check_assumption(self, contract: Contract) -> Verdict:
         """Evaluate a contract's assumption conjunction.
 
@@ -710,11 +794,14 @@ class TraceVerifier:
         * Liveness formulas (``DetFormula.liveness == True``) are
           skipped by default — at runtime they can't be enforced by
           blocking, so the monitor ignores them mid-session.  Pass
-          ``include_liveness=True`` for offline / end-of-session checks.
+          ``include_liveness=True`` for offline / end-of-session checks,
+          which decide every guarantee on the completed trace.
 
         Args:
             contract: The contract to evaluate.
-            include_liveness: Whether to evaluate liveness guarantees.
+            include_liveness: Whether this is the end-of-session check:
+                liveness guarantees are evaluated and every guarantee is
+                decided as if the session ended here.
 
         Returns:
             A :class:`ContractVerdict` with per-constraint verdicts.
@@ -757,13 +844,10 @@ class TraceVerifier:
                 if not include_liveness and is_liveness and self._backend != "dfa":
                     continue
                 raw = _raw_formula(e)
-                # Session-end checks on liveness formulas need the DFA
-                # to collapse pending "?" to "⊥" (weak finite-trace).
-                # The recursive backend already uses weak semantics
-                # uniformly, so the ``finalize`` flag is a no-op there.
-                holds = self._incremental_eval(
-                    raw, finalize=include_liveness and (is_liveness or self._backend == "dfa")
-                )
+                # A session-end check decides every guarantee on the
+                # completed trace, so an obligation still pending (an
+                # ``X`` as much as an ``F``) is decided there.
+                holds = self._incremental_eval(raw, finalize=include_liveness)
                 fresh = True if holds else self._enforcement_is_fresh(raw, eval_pos=0)
                 e_results.append(
                     Verdict(

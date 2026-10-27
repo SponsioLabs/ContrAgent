@@ -27,7 +27,7 @@ from contragent.models.system import System
 from contragent.models.trace import Trace
 from contragent.runtime.strategies import EnforcementResult, EnforcementStrategy
 from contragent.runtime.supervisor import SupervisionEvent, Supervisor
-from contragent.runtime.verifier import Verdict
+from contragent.runtime.verifier import Verdict, can_owe
 
 _VALID_MODES = ("gate", "flag")
 # Pre-rename spellings, accepted so existing scripts and configs keep working.
@@ -59,6 +59,9 @@ class CheckResult:
     violations: list[EnforcementResult] = field(default_factory=list)
     redirected_to: Any | None = None
     rollback_performed: bool = False
+    # What a contract asks of the agent next: the call the next event owes,
+    # or what is still owed before the session may end.
+    prompts: list[str] = field(default_factory=list)
 
     @property
     def blocked(self) -> bool:
@@ -92,6 +95,11 @@ class CheckResult:
         """Message to show the agent, empty when the action is allowed."""
         msgs = [r.agent_msg or r.message for r in self.violations if r.action != "allowed"]
         return "\n".join(m for m in msgs if m)
+
+    @property
+    def prompt(self) -> str:
+        """What the contracts ask of the agent next, empty when nothing is owed."""
+        return "\n".join(self.prompts)
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -168,6 +176,7 @@ class ContrAgent:
         self._library_label = library_label
         self._trace_path = os.fspath(trace_path) if trace_path is not None else None
         self._decisions: list[dict] = []
+        self._finish_prompts = 0
         if verbose:
             from contragent import __version__
             from contragent.console import Console
@@ -288,7 +297,9 @@ class ContrAgent:
         wrapper returns the refusal text, which is what goes back to the
         model as the tool result, and with ``on_block="raise"`` it raises
         :class:`ContractViolation`. A result the contracts withhold is
-        replaced the same way.
+        replaced the same way. When a contract owes a call at the next
+        event, a text result comes back with the prompt for it appended
+        (:attr:`CheckResult.prompt` of :meth:`guard_after`).
         """
         if on_block not in ("return", "raise"):
             raise ValueError(f"on_block must be 'return' or 'raise', got {on_block!r}")
@@ -327,6 +338,8 @@ class ContrAgent:
             after = self.guard_after(tool_name, result)
             if after.suppressed:
                 return _fail(after)
+            if after.prompt and isinstance(result, str):
+                return f"{result}\n\n{after.prompt}"
             return result
 
         guarded.contragent_tool = tool_name  # type: ignore[attr-defined]
@@ -371,6 +384,10 @@ class ContrAgent:
                     "contracts": [v.rule_id for v in result.violations if v.rule_id],
                     "feedback": result.feedback,
                 }
+            )
+        elif result.prompts:
+            self._decisions.append(
+                {"tool": tool_name, "decision": "prompted", "feedback": result.prompt}
             )
         if self._console is not None:
             self._console.result(tool_name, result)
@@ -612,8 +629,141 @@ class ContrAgent:
             if result.suppressed and self._mode != "flag":
                 self._restore_output_content(tool_name, before)
                 result.allowed = False
+            elif self._mode != "flag":
+                result.prompts = self._next_prompts(tool_name)
             self._record(tool_name, result.violations)
             return result
+
+    # ------------------------------------------------------------------
+    # Prompting: what the contracts ask of the agent next
+    # ------------------------------------------------------------------
+    #
+    # Both prompts read the contracts the way the end of the session does
+    # (:func:`contragent.formulas.evaluator.evaluate_final`): after the last
+    # event nothing happens. A guarantee owes a call at the next event when
+    # an event at which nothing happens would violate it; it owes something
+    # before the end when the session ending now would. The tools offered are
+    # the calls that would not, probed on the monitors without recording.
+
+    def _owing(self) -> list[tuple[Any, Any]]:
+        """``(contract, guarantee)`` pairs of this agent that bind and are not
+        violated yet, and can still owe something."""
+        verifier = self._supervisor.verifier
+        verifier.set_agents({c.agent.id: c.agent for c in self._system.contracts})
+        verifier.sync_from_contracts(self._supervisor.trace, self._system.contracts)
+        out = []
+        for c in self._system.contracts:
+            if c.agent.id != self.agent_id:
+                continue
+            owing = [g for g in c.guarantees if can_owe(g)]
+            if owing and verifier.check_assumption(c).holds:
+                out += [(c, g) for g in owing if verifier.holds_so_far(g)]
+        return out
+
+    def _probes(self) -> tuple[dict, dict[str, dict]]:
+        """The valuation of a next event at which nothing happens, and of a
+        next call of each tool the contracts name."""
+        from contragent.models.trace import Event
+
+        verifier = self._supervisor.verifier
+        events = self._supervisor.trace.events
+        ts = events[-1].ts + 1 if events else 0
+        nothing = verifier.probe_valuation(
+            Event(ts=ts, event_type="context_update", agent=self.agent_id)
+        )
+        calls = {
+            t: verifier.probe_valuation(
+                Event(ts=ts, event_type="tool_call", agent=self.agent_id, tool=t, args={})
+            )
+            for t in self._named_tools()
+        }
+        return nothing, calls
+
+    def _named_tools(self) -> list[str]:
+        """The tools named by ``called(...)`` in this agent's contracts."""
+        from contragent.formulas.formula import Atom
+        from contragent.runtime.verifier import _raw_formula
+
+        names: dict[str, None] = {}
+
+        def walk(node: Any) -> None:
+            if isinstance(node, Atom):
+                if node.predicate == "called" and node.args:
+                    names.setdefault(str(node.args[0]), None)
+                return
+            for attr in ("child", "left", "right"):
+                sub = getattr(node, attr, None)
+                if sub is not None and not isinstance(sub, (str, int, float)):
+                    walk(sub)
+
+        for c in self._system.contracts:
+            if c.agent.id == self.agent_id:
+                for g in c.guarantees:
+                    walk(_raw_formula(g))
+        return list(names)
+
+    @staticmethod
+    def _policy(contract: Any, guarantee: Any) -> str:
+        return getattr(guarantee, "desc", None) or contract.desc or str(guarantee)
+
+    @staticmethod
+    def _calls(tools: list[str]) -> str:
+        return " or ".join(f"`{t}`" for t in tools)
+
+    def _next_prompts(self, tool_name: str) -> list[str]:
+        """The calls the next event owes after ``tool_name``, one prompt per guarantee."""
+        owing = self._owing()
+        if not owing:
+            return []
+        verifier = self._supervisor.verifier
+        nothing, calls = self._probes()
+        prompts = []
+        for c, g in owing:
+            if not verifier.violated_by(g, nothing):
+                continue
+            tools = [t for t, v in calls.items() if not verifier.violated_by(g, v)]
+            if tools:
+                prompts.append(
+                    f"The action `{tool_name}` was completed. Policy: {self._policy(c, g)}. "
+                    f"Call {self._calls(tools)} next."
+                )
+        return prompts
+
+    def guard_finish(self, max_prompts: int = 2) -> CheckResult:
+        """Check what the contracts still owe before the agent ends the session.
+
+        Call it when the agent is about to stop. ``allowed`` is False when
+        some guarantee would be violated by the session ending now; each
+        such guarantee has a prompt naming the call that would discharge
+        it, which the integration shows the agent so it can continue. The
+        check prompts at most ``max_prompts`` times in a session and then
+        allows the end, so an agent that does not comply still stops, and
+        :meth:`finish_session` decides what is left. In ``"flag"`` mode it
+        always allows the end.
+        """
+        with self._lock:
+            if self._mode == "flag" or self._finish_prompts >= max_prompts:
+                return CheckResult(allowed=True)
+            owing = self._owing()
+            verifier = self._supervisor.verifier
+            owed = [(c, g) for c, g in owing if not verifier.holds_at_end(g)]
+            if not owed:
+                return CheckResult(allowed=True)
+            _, calls = self._probes()
+            prompts = []
+            for c, g in owed:
+                tools = [
+                    t for t, v in calls.items() if not verifier.violated_by(g, v, then_end=True)
+                ]
+                then = (
+                    f"Call {self._calls(tools)} before finishing." if tools else "It is still owed."
+                )
+                prompts.append(f"The session cannot end yet. Policy: {self._policy(c, g)}. {then}")
+            self._finish_prompts += 1
+        self._decisions.append(
+            {"tool": "<session_end>", "decision": "prompted", "feedback": "\n".join(prompts)}
+        )
+        return CheckResult(allowed=False, prompts=prompts)
 
     def _output_content(self, tool_name: str) -> tuple[Any, str | None] | None:
         """The event carrying ``tool_name``'s output and its current content."""
@@ -775,8 +925,7 @@ class ContrAgent:
             pending = [
                 c
                 for c in self._system.contracts
-                if c.agent.id == self.agent_id
-                and any(getattr(g, "liveness", False) for g in c.guarantees)
+                if c.agent.id == self.agent_id and any(can_owe(g) for g in c.guarantees)
             ]
             if not pending:
                 self._pending_liveness = []
@@ -791,11 +940,16 @@ class ContrAgent:
                     collector.start_contract_check(label)
                     failed = False
                     for g in verdict.guarantees:
-                        if not getattr(g.formula, "liveness", False):
+                        if not can_owe(g.formula):
                             continue
                         span = collector.start_guarantee(g.desc)
                         if g.holds:
                             collector.finish_span("ok")
+                            continue
+                        if not verifier.holds_so_far(g.formula):
+                            # Violated while the session ran and reported
+                            # then; only what the end leaves owed is new.
+                            collector.finish_span("violated")
                             continue
                         span.result = False
                         collector.finish_span("violated")
@@ -922,6 +1076,7 @@ class ContrAgent:
             self._supervisor.reset()
             self._violations.clear()
             self._pending_liveness = None
+            self._finish_prompts = 0
 
 
 __all__ = ["ContrAgent", "CheckResult"]

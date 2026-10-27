@@ -22,7 +22,12 @@ A contract is a pair (A, G) over the agent's interaction trace:
 Both are ALTLf formulas: linear temporal logic on the finite trace of
 the session, over interaction predicates such as `called('t')`,
 `arg_field_has('t', 'field', 'regex')`, `output_has('t', 'regex')`, and
-counters such as `Var('count', 't')`.
+counters such as `Var('count', 't')`. `called('t')` holds of a call that
+ran, whether or not the tool returned an error, so a failed attempt
+counts against a limit; a refused call never ran and is not on the trace.
+A rule that needs the call to have succeeded says so (a precondition met
+only by a verification that passed, say), through the call's output or a
+success flag the integration records.
 
 A library is a YAML file. Each contract has a `desc`, one or more `G`
 formulas, and zero or more `A` formulas. Lists mean AND.
@@ -256,6 +261,16 @@ refusal text without running, or raises `ContractViolation` with
 `on_block="raise"`) and `guard_after` on the way out (a withheld result
 is replaced the same way). A loop that executes tools elsewhere calls
 the two hooks itself.
+
+Contracts also prompt. After a call whose contract owes the next event
+(`G(a -> X b)` once `a` happened), the result comes back with "Policy: …
+Call `b` next." appended (`CheckResult.prompt` of `guard_after`). Before
+the agent stops, `guard.guard_finish()` returns `allowed=False` and a
+prompt for every guarantee the end would violate ("The session cannot end
+yet. Policy: …. Call `close_case` before finishing."), at most twice by
+default, so an agent that does not comply still stops and
+`finish_session()` reports what it left owed. Both read the contracts the
+way the end of the session does: after the last event nothing happens.
 
 ## 10. A worked example
 

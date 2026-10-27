@@ -42,6 +42,51 @@ _TOOL_KEYED = frozenset(
 )
 
 
+# Predicates that describe what happens *at* one event: a tool call and
+# its arguments and output, an LLM request or response. Grounding emits
+# them only on the event they describe. Every other key (counters,
+# ``ctx``/``ctx_value`` facts, permissions, ``flow``/``contains`` once
+# they occurred, the clock, ``time_since``) describes the state the
+# session is in and carries over from event to event.
+EVENT_PREDICATES = frozenset(
+    {
+        "called",
+        "called_any",
+        "called_with",
+        "arg_has",
+        "arg_field_has",
+        "arg_length_exceeds",
+        "arg_numeric",
+        "arg_paths_within",
+        "arg_value",
+        "output_has",
+        "llm_said",
+        "prompt_contains",
+        "system_prompt_present",
+        "context_length",
+        "segment",
+        "response_words",
+        "response_chars",
+    }
+)
+
+
+def predicate_of(key: str) -> str:
+    """The predicate name of a key: ``"called(x)"`` -> ``"called"``, ``"now"`` -> ``"now"``."""
+    return key.split("(", 1)[0]
+
+
+def idle_valuation(valuation: dict) -> dict:
+    """The valuation of an event at which nothing happens, after ``valuation``.
+
+    A session that has ended is read as continuing with such events
+    forever: no tool is called and nothing is said, so every event
+    predicate is absent, and the state stays what it was at the last
+    event. This is what grounding emits for an event of no kind.
+    """
+    return {k: v for k, v in valuation.items() if predicate_of(k) not in EVENT_PREDICATES}
+
+
 def _escape(s: str) -> str:
     """Escape characters that would be ambiguous in predicate keys."""
     s = str(s)

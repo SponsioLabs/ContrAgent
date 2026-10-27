@@ -23,10 +23,18 @@ for every outcome of the comparisons, so a check over them is exact (the module
 docstring of `contragent.analysis.chase` gives the argument).
 
 Because CHASE reasons over infinite words, the default `--semantics finite`
-applies the LTL<sub>f</sub>-to-LTL translation with an `alive` proposition;
-`--semantics infinite` exports the formulas as written. Contract blocks are numbered (`c1`, `c2`, ...) and carry their
-description in the comment above them, since CHASE's console crashes on
-contract names longer than eight characters.
+writes ContrAgent's reading of a finished session: what a contract still owes at
+the end (the next event of an `X`, the event an `F` or a `U` waits for) is read
+on idle events after the last one, at which no tool is called and the state stays
+what it was, while a `G` binds the events of the session. A proposition `alive`
+marks the events of the session, `G` becomes `G(alive -> .)`, and the contract
+`finite` asserts that the session is non-empty, that every event proposition is
+false once it is over, and that every state proposition and every relation over
+state quantities keeps its value from then on. A relation over the arguments of
+a call is left free after the end. `--semantics infinite` exports the formulas as
+written. Contract blocks are numbered (`c1`, `c2`, ...) and carry their
+description in the comment above them, since CHASE's console crashes on contract
+names longer than eight characters.
 
 ## Checking with chase_cps
 

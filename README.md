@@ -64,9 +64,12 @@ A refused call never runs; the wrapper returns the refusal text, which is
 what goes back to the model as the tool result (`on_block="raise"` raises
 instead). `guard.wrap({...})` wraps a whole tool table, and loops that
 execute tools elsewhere call the two hooks, `guard_before` and
-`guard_after`, themselves. `verbose=True` prints every decision as it is
-made, as a timeline of the session; `trace_path=` writes the session at
-`finish_session()` as a trace file that `contragent replay` reads back.
+`guard_after`, themselves. When a call owes the next one (`G(a -> X b)`),
+the result comes back with a prompt to call `b` next, and before the agent
+stops, `guard.guard_finish()` prompts for what is still owed.
+`verbose=True` prints every decision as it is made, as a timeline of the
+session; `trace_path=` writes the session at `finish_session()` as a trace
+file that `contragent replay` reads back.
 
 The same library replays a recorded trace:
 

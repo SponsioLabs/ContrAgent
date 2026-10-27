@@ -39,7 +39,7 @@ Before the native automata search runs, a handful of short
 grounding-consistent valuation traces (the all-false trace, plus one
 single-``called(t)`` trace per call atom) are evaluated against the
 conjunction of every contract using the sat engine's own progression
-and weak-finalization rules, so the finite-trace semantics agrees
+and end-of-trace verdict, so the finite-trace semantics agrees
 with the search by construction. Any trace satisfying all of them is
 a **model** of the full conjunction — a satisfiability certificate
 proving no unsatisfiable core exists — so the library is certified
@@ -534,24 +534,17 @@ def _witness_certifies_sat(units: Sequence[ContractUnit], axioms: Sequence[Formu
     immediately.
 
     Evaluation runs the sat engine's **own** abstraction, progression,
-    and weak end-of-trace finalization
+    and end-of-trace verdict
     (:func:`contragent.formulas.sat._abstract` /
     :func:`~contragent.formulas.sat._progress` /
     :func:`~contragent.formulas.sat._finalize`) on the conjunction,
     projecting each concrete witness state onto an abstract valuation
     (atoms by ``pred_key`` lookup; comparison propositions by concrete
-    evaluation with the runtime's missing → ``False`` resolution). So
-    the semantics — ``G`` vacuous at trace end, ``F`` fails if never
-    satisfied, ``X`` weak — agrees with the search **by construction**.
-    That exactness matters: the two general-purpose evaluators both
-    diverge from the search on end-of-trace edge cases and could
-    certify SAT where the search proves a genuine conflict — the
-    stateless recursive evaluator's weak ``X`` is trivially true *at*
-    the last position without imposing its child on the empty suffix
-    (``X(F(p))`` "holds" on a one-event trace), and ``DFAEvaluator``
-    finalizes a residual ``Not(atom)`` to ⊤ where the search's
-    NNF'd negative literal collapses to ⊥. A failed witness only ever
-    falls through to the search, never fabricates a verdict.
+    evaluation with the runtime's missing → ``False`` resolution). The
+    end of the witness is read as the search reads it, on idle events
+    after the last state, so the verdict agrees with the search **by
+    construction**. A failed witness only ever falls through to the
+    search, never fabricates a verdict.
 
     The projected valuations stay inside the search's constrained
     space: comparisons over partial terms (``ArgValue``, ``CtxValue``,
@@ -564,6 +557,7 @@ def _witness_certifies_sat(units: Sequence[ContractUnit], axioms: Sequence[Formu
     the units exactly as in the search's queries.
     """
     from contragent.formulas import sat as _sat
+    from contragent.formulas._pred_key import idle_valuation
     from contragent.formulas.dfa_evaluator import _resolve_arith, _safe_compare
 
     formulas = [u.combined for u in units] + list(axioms)
@@ -589,7 +583,10 @@ def _witness_certifies_sat(units: Sequence[ContractUnit], axioms: Sequence[Formu
             if node is False:
                 break
         else:
-            if _sat._finalize(node) is True:
+            # The session ends here: the residual on idle events after the
+            # last state (no call, the state kept), every proposition known.
+            idle = val_of(idle_valuation(trace[-1])) if trace else frozenset()
+            if _sat._finalize(node, lambda pid, v=idle: pid in v) is True:
                 return True
     return False
 

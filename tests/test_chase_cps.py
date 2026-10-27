@@ -112,7 +112,9 @@ def test_unsat_core_names_an_injected_conflict():
     pair = [f"c{len(library) + 1}", f"c{len(library) + 2}"]
     core = session.unsat_core()
     assert core, core.to_dict()
-    assert not core.core.assumptions
+    # The finite-trace axiom may take part: F(audit) could otherwise be met
+    # after the end of the session, where no tool is called.
+    assert all(t in session.axiom for t in core.core.assumptions)
     assert session.contracts_in(core) == pair
 
     # The native search cannot settle the whole unsatisfiable library (its
@@ -169,3 +171,23 @@ def test_refinement_and_redundancy():
     assert len(redundancy.contract.guarantees) == 1 and len(redundancy.removed_guarantees) == 1
     assert not redundancy.contract.assumptions
     assert session.conjoin(["c1", "c2"], name="both").name == "both"
+
+
+@needs_chase
+@pytest.mark.parametrize(
+    "guarantee",
+    [
+        "(G((called('m') -> X(called('g')))) & F(called('m')) & G(!(called('g'))))",
+        "(G((called('m') -> X(called('g')))) & F(called('m')))",
+        "(G((called('s') -> X(!(called('s'))))) & F(called('s')))",
+        "(G((called('m') -> X(X(called('g'))))) & F(called('m')) & G(!(called('g'))))",
+        "(X(ctx('auth', 'yes')) & G(!(ctx('auth', 'yes'))))",
+        "(G(called('a')) & F(called('a')))",
+    ],
+)
+def test_finite_export_agrees_with_the_satisfiability_check(guarantee):
+    from contragent.formulas.sat import is_satisfiable
+
+    (c,) = _contracts(guarantee)
+    session = ChaseSession.from_library([c])
+    assert bool(session.verify("c1")) is bool(is_satisfiable(c.guarantee)), guarantee
