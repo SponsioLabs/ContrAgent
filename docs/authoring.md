@@ -182,7 +182,26 @@ A trace is `{"events": [{"ts": 0, "agent": "agent", "type":
 [../examples/traces/](../examples/traces/). A supervised session writes
 one itself when constructed with `trace_path=` (or on
 `guard.save_trace(path)`): the committed events, plus `metadata` listing
-every refusal and withheld result with the contract that decided it. `contragent eval DIR
+every refusal and withheld result with the contract that decided it.
+
+**Replaying under an edited library.** The metadata also records the
+library the session ran under, by content: a fingerprint per contract
+and a snapshot of its formulas. Replaying the trace under a later
+version of the library answers a different question from the one the
+supervisor answered at the time, and `contragent replay` keeps the two
+apart. It reports whether the library is the recorded one and which
+contracts were added, removed, or changed. For each call refused at the
+time, it reports whether the new library would refuse it too. That
+call never ran, so this answer is counterfactual: it is checked against
+the recorded prefix. `--original` replays under the snapshot instead of
+`--config`; `guard.audit_trace(trace)` returns the same report.
+
+```bash
+contragent replay session.json --config policy_v2.yaml   # what v2 would flag
+contragent replay session.json --original                # what governed the session
+```
+
+`contragent eval DIR
 --config policy.yaml` scores a whole directory of `safe_*.json` /
 `unsafe_*.json` traces and reports precision and recall per contract.
 

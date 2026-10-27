@@ -606,6 +606,23 @@ def _parse_repr_unary(peek, consume, parse_expr):
             args.append(_unescape_str_token(consume()))
         consume(")")
         return Var(args[0], *args[1:])
+    elif t in ("ArgValue", "ArgLength", "CtxValue"):
+        # Raw value lookups print as ``ArgLength('tool', 'field')``;
+        # without this branch they read back as atoms and then as
+        # ``Var('ArgLength', ...)``, a counter that is never set.
+        consume(t)
+        consume("(")
+        args = []
+        while peek() != ")":
+            if peek() == ",":
+                consume(",")
+            args.append(_unescape_str_token(consume()))
+        consume(")")
+        cls = {"ArgValue": ArgValue, "ArgLength": ArgLength, "CtxValue": CtxValue}[t]
+        arity = 1 if cls is CtxValue else 2
+        if len(args) != arity:
+            raise ParseError(f"{t} takes {arity} argument(s), got {args}")
+        return cls(*args)
     elif t == "Atom":
         consume("Atom")
         consume("(")

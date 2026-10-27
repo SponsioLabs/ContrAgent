@@ -24,7 +24,7 @@ from typing import Any
 from contragent.models.agent import Agent
 from contragent.models.contract import Contract
 from contragent.models.system import System
-from contragent.models.trace import Trace
+from contragent.models.trace import Event, Trace
 from contragent.runtime.strategies import EnforcementResult, EnforcementStrategy
 from contragent.runtime.supervisor import SupervisionEvent, Supervisor
 from contragent.runtime.verifier import Verdict, can_owe
@@ -356,17 +356,20 @@ class ContrAgent:
         if result.stop_original:
             self._stats["refused"] += 1
         if result.stop_original or result.escalated:
-            self._decisions.append(
-                {
-                    "tool": tool_name,
-                    "args": dict(args or {}),
-                    "decision": "redirected"
-                    if result.redirected
-                    else ("escalated" if result.escalated else "refused"),
-                    "contracts": [v.rule_id for v in result.violations if v.rule_id],
-                    "feedback": result.feedback,
-                }
-            )
+            record = {
+                "tool": tool_name,
+                "args": dict(args or {}),
+                "decision": "redirected"
+                if result.redirected
+                else ("escalated" if result.escalated else "refused"),
+                "contracts": [v.rule_id for v in result.violations if v.rule_id],
+                "feedback": result.feedback,
+            }
+            if result.stop_original:
+                # Where the call would have entered the trace: a replay
+                # under another library asks what it would have decided here.
+                record["at"] = len(self._supervisor.trace.events)
+            self._decisions.append(record)
         if self._console is not None:
             self._console.call(tool_name, args, result)
         return result
@@ -419,13 +422,24 @@ class ContrAgent:
         one), plus ``metadata`` with the agent, the library, every
         refusal and withheld result with the contract that decided it,
         and the obligations still owed if the session has ended.
+
+        The library is recorded by name, by content fingerprint, and as
+        a snapshot of its formulas, so a later replay can tell whether it
+        is judging the trace under the library that governed it (see
+        :meth:`audit_trace`).
         """
+        from contragent import __version__
+        from contragent.provenance import library_snapshot
+
         data = self.trace.to_dict()
         pending = [] if self._pending_liveness is None else [v.desc for v in self._pending_liveness]
         data["metadata"] = {
             **(data.get("metadata") or {}),
             "agent": self.agent_id,
             "library": self._library_label,
+            "library_fingerprint": self.library_fingerprint(),
+            "library_snapshot": library_snapshot(self._own_contracts()),
+            "contragent": __version__,
             "mode": self._mode,
             "decisions": list(self._decisions),
             "pending_obligations": pending,
@@ -1031,6 +1045,88 @@ class ContrAgent:
             "violations": violations,
             "first_violation": first,
         }
+
+    def _own_contracts(self) -> list[Contract]:
+        return [c for c in self._system.contracts if c.agent.id == self.agent_id]
+
+    def library_fingerprint(self) -> dict:
+        """Content fingerprint of this agent's contracts; see
+        :func:`contragent.provenance.library_fingerprint`."""
+        from contragent.provenance import library_fingerprint
+
+        return library_fingerprint(self._own_contracts())
+
+    def audit_trace(self, trace: Trace) -> dict[str, Any]:
+        """Replay a saved trace under this library, kept apart from what was recorded.
+
+        A trace saved under library v1 and replayed under v2 answers two
+        questions, and this method keeps them apart:
+
+        - ``recorded``: what the supervisor decided when the session ran
+          (its refusals, withheld results, and owed obligations), read
+          from the trace's metadata.
+        - ``replayed``: :meth:`evaluate_trace` under this library, on the
+          events that ran.
+        - ``library``: whether this library is the one the trace was
+          saved under, and if not, which contracts were added, removed,
+          or changed, and the ContrAgent versions on both sides.
+        - ``refusals``: each call refused when recorded, with the
+          contracts this library would refuse it under at the same
+          point (``[]``: it would be allowed). These calls never ran, so
+          the answer is counterfactual: it checks the call against the
+          recorded prefix, not against a session that took a different
+          course after it. Safety guarantees only.
+        """
+        from contragent import __version__
+        from contragent.provenance import diff_fingerprints
+
+        meta = trace.metadata or {}
+        library = {
+            "recorded": meta.get("library"),
+            "replayed": self._library_label,
+            **diff_fingerprints(meta.get("library_fingerprint"), self.library_fingerprint()),
+            "version": {"recorded": meta.get("contragent"), "replayed": __version__},
+        }
+        refusals = []
+        for d in meta.get("decisions", []):
+            if d.get("decision") not in ("refused", "redirected"):
+                continue
+            at = d.get("at")
+            refusals.append(
+                {
+                    "tool": d.get("tool"),
+                    "args": d.get("args") or {},
+                    "at": at,
+                    "recorded": d["decision"],
+                    "recorded_contracts": d.get("contracts", []),
+                    "replayed_contracts": None
+                    if at is None
+                    else self._would_refuse(trace, at, d.get("tool"), d.get("args")),
+                }
+            )
+        return {
+            "library": library,
+            "recorded": {
+                "decisions": meta.get("decisions", []),
+                "pending_obligations": meta.get("pending_obligations"),
+            },
+            "replayed": self.evaluate_trace(trace),
+            "refusals": refusals,
+        }
+
+    def _would_refuse(self, trace: Trace, at: int, tool: str | None, args: dict | None) -> list:
+        """Contracts a call at position ``at`` would newly violate under this library."""
+        prefix = list(trace.events[:at])
+        ts = (prefix[-1].ts + 1) if prefix else 0
+        call = Event(
+            ts=ts, agent=self.agent_id, event_type="tool_call", tool=tool, args=args or None
+        )
+
+        def failing(events: list) -> set:
+            report = self.evaluate_trace(Trace(events=events), include_liveness=False)
+            return {v["contract"] for v in report["violations"]}
+
+        return sorted(failing([*prefix, call]) - failing(prefix))
 
     def check_conflicts(self, *, backend: str = "auto", **kwargs: Any):
         """Run the library conflict check (see :func:`contragent.analysis.check_conflicts`)."""

@@ -84,21 +84,48 @@ def eval_cmd(trace_path: Path, contracts, config_path, agent_id, as_json) -> Non
 
 @cli.command(name="replay")
 @click.argument("trace_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--config", "-c", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--config", "-c", "config_path", default=None, type=click.Path(exists=True))
+@click.option(
+    "--original",
+    is_flag=True,
+    help="Replay under the library snapshot saved in the trace instead of --config.",
+)
 @click.option("--agent", "-a", "agent_id", default=None)
 @click.option("--json", "as_json", is_flag=True)
-def replay_cmd(trace_path: Path, config_path, agent_id, as_json) -> None:
-    """Replay one recorded trace and print the end-of-trace verdict."""
+def replay_cmd(trace_path: Path, config_path, original, agent_id, as_json) -> None:
+    """Replay one recorded trace and print the end-of-trace verdict.
+
+    The verdict is this library's judgment of the events that ran. When
+    the trace was saved under a different library, the output says so,
+    lists the contracts that changed, and shows for each call refused at
+    the time whether this library would refuse it too.
+    """
     from contragent.core import ContrAgent
     from contragent.models.trace import Trace
+    from contragent.provenance import contracts_from_snapshot
 
     data = json.loads(trace_path.read_text())
     trace = Trace.from_dict(data)
-    guard = ContrAgent(agent_id=agent_id or "agent", config=config_path)
-    result = guard.evaluate_trace(trace)
+    meta = trace.metadata or {}
+    agent_id = agent_id or meta.get("agent") or "agent"
+    if original == (config_path is not None):
+        raise click.UsageError("Pass exactly one of --config and --original.")
+    if original:
+        snapshot = meta.get("library_snapshot")
+        if snapshot is None:
+            raise click.UsageError("This trace has no library snapshot; pass --config.")
+        guard = ContrAgent(agent_id=agent_id, contracts=contracts_from_snapshot(snapshot))
+        guard._library_label = f"{meta.get('library')} (snapshot in the trace)"
+    else:
+        guard = ContrAgent(agent_id=agent_id, config=config_path)
+    audit = guard.audit_trace(trace)
+    result = audit["replayed"]
     if as_json:
-        click.echo(json.dumps(result, indent=2))
+        click.echo(
+            json.dumps({**result, **{k: audit[k] for k in ("library", "refusals")}}, indent=2)
+        )
         return
+    _echo_library(audit["library"])
     color = "red" if result["verdict"] == "FAIL" else "green"
     click.echo(click.style(f"verdict: {result['verdict']}", fg=color, bold=True))
     if result["first_violation"] is not None:
@@ -108,7 +135,38 @@ def replay_cmd(trace_path: Path, config_path, agent_id, as_json) -> None:
         )
     for v in result["violations"]:
         click.echo(f"  - {v['contract'] or v['guarantee']}")
+    if audit["refusals"]:
+        click.echo("refused when recorded (never ran; checked against the recorded prefix):")
+        for r in audit["refusals"]:
+            now = r["replayed_contracts"]
+            if now is None:
+                verdict = "position not recorded"
+            elif now:
+                verdict = "refused here too: " + "; ".join(now)
+            else:
+                verdict = "this library would allow it"
+            click.echo(f"  - {r['tool']} at event {r['at']}: {verdict}")
     sys.exit(1 if result["verdict"] == "FAIL" else 0)
+
+
+def _echo_library(lib: dict) -> None:
+    """Which library judged the trace, and how it differs from the recorded one."""
+    click.echo(f"recorded under: {lib['recorded'] or 'unknown'}")
+    click.echo(f"replayed under: {lib['replayed']}")
+    if lib["same"] is None:
+        click.echo("library: unknown (the trace carries no fingerprint)")
+    elif lib["same"]:
+        click.echo("library: the same contracts the trace was recorded under")
+    else:
+        click.echo(
+            click.style("library: DIFFERENT from the one the trace was recorded under", bold=True)
+        )
+        for key in ("added", "removed", "changed"):
+            for name in lib[key]:
+                click.echo(f"  {key}: {name}")
+    versions = lib["version"]
+    if versions["recorded"] and versions["recorded"] != versions["replayed"]:
+        click.echo(f"ContrAgent: recorded {versions['recorded']}, replaying {versions['replayed']}")
 
 
 @cli.command(name="conflicts")

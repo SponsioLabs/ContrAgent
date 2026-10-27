@@ -192,3 +192,13 @@ def test_contract_pack_parses_without_ltl_errors(pack_path: Path):
     cfg = load_config(pack_path)
     assert cfg is not None
     assert cfg.agents, f"{pack_path.name} parsed to an empty agents dict"
+
+
+def test_parse_repr_reads_back_raw_value_lookups():
+    from contragent.formulas.formula import ArgLength, ArgValue, CtxValue, Eq, G
+
+    for f in (
+        G(Eq(ArgLength("m", "a"), ArgLength("m", "b"))),
+        G(Eq(ArgValue("t", "f"), CtxValue("k"))),
+    ):
+        assert repr(parse_repr(repr(f))) == repr(f)

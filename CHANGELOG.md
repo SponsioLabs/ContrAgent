@@ -59,6 +59,10 @@ project uses [semantic versioning](https://semver.org/).
   arrive wrapped in `DetFormula`, which the check passed to its formula
   walkers unopened, so it found no obligation and no count bound and
   reported every loaded library as free of dead ends.
+- `parse_repr` reads back `ArgValue`, `ArgLength`, and `CtxValue`. They
+  were read as atoms and then as counters (`Var('ArgLength', ...)`)
+  that are never set, so a contract written back from its `repr`
+  compared the wrong values.
 
 ### Removed
 - Dead code, none of it referenced by the package, the tests, the
@@ -70,6 +74,16 @@ project uses [semantic versioning](https://semver.org/).
   `make_contracts`, `render_last_turn`, `register_callback`, ...).
 
 ### Added
+- A saved trace records its library by content: `library_fingerprint`
+  (a digest per contract and one for the library), `library_snapshot`
+  (the formulas, read back with `parse_repr`), and the ContrAgent
+  version; each refused call records where it would have entered the
+  trace. `ContrAgent.audit_trace(trace)` and `contragent replay` keep
+  what the supervisor recorded apart from what the replaying library
+  flags: whether the library is the recorded one, the contracts added,
+  removed, or changed, and for each call refused at the time, whether
+  the replaying library would refuse it too. `contragent replay
+  --original` replays under the snapshot in the trace (#2).
 - `contragent.formulas.sat.Progressor`: the satisfiability search's
   abstraction, one progression step, and its end-of-trace verdict
   (`accepting(node, true_keys)`, the true keys of the last event), for
