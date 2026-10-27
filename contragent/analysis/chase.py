@@ -7,8 +7,8 @@ conjunction, refinement) with model-checking and synthesis back ends
 (NuSMV, slugs, gr1c). ContrAgent's contract libraries are ALTL\\ :sub:`f`
 contracts over interaction predicates; this module maps them onto CHASE's
 *logics* specification language so that a library can be analysed with
-CHASE's design-time tools, and drives the CHASE console when its Python
-bindings are installed.
+CHASE's design-time tools, and checks the exported contracts with
+``chase_cps``, CHASE's Python package, when it is installed.
 
 Grounding
 ---------
@@ -20,12 +20,41 @@ predicates carry parameters, so a library is *grounded* at export:
   ``arg_field_has(bash, command, rm -rf)``, ...) becomes one proposition,
   named by its canonical key (:func:`contragent.formulas._pred_key.pred_key`);
 * every quantity (``count(T)``, ``arg_numeric(T, f)``, ``ArgLength(T, f)``,
-  ``CtxValue(k)``) becomes one integer variable; a saturating counter is
-  declared with the range ``(0:K)`` where ``K`` exceeds every constant it is
-  compared with, the same finite expansion the satisfiability check uses;
+  ``CtxValue(k)``) becomes one integer variable declared with a range;
 * comparisons are emitted as relations inside the formulas.
 
-The library is finite, so the grounding is finite and exact.
+The logics language gives an integer declared without a range the values
+0..16, so a comparison with a larger constant (``university.yaml`` compares
+credits with 90) would be checked on the wrong values; every integer is
+therefore declared ``integer (lo:hi) variable``:
+
+* a saturating counter gets ``(0:K)``, where ``K`` is one more than the
+  largest constant it is compared with (at least 1), the same finite
+  expansion the satisfiability check uses;
+* any other integer gets ``(lo:hi)``, where ``lo`` and ``hi`` are the
+  smallest and the largest constant it is compared with, widened by one;
+  an ``arg_length`` never goes below 0;
+* integers compared with each other share one range: the union of their
+  constants, widened by the number of integers in the group instead of one,
+  or ``(0:n-1)`` for ``n`` integers compared with no constant.
+
+The ranges are exact. A comparison with a constant cannot tell apart two
+values below the smallest constant ``c_lo``, nor two values above the
+largest ``c_hi``, so ``c_lo - 1`` stands for every smaller value and
+``c_hi + 1`` for every larger one, and the range keeps every integer in
+between; ``K`` stands for every count above the constants. A group of
+``n`` integers compared with each other takes at most ``n`` distinct values
+below ``c_lo`` at one step, and the ``n`` places below it keep their order
+(likewise above ``c_hi``). Relations compare values of the same step, so a
+trace over the integers maps step by step onto a trace over the ranges
+that satisfies the same relations, and a formula is satisfiable over the
+declared ranges exactly when it is over the integers. The map sends a
+value below ``c_lo`` to a place no smaller than the value, so a counter
+and a length, which are never negative, keep the range from 0; ``ctx_value`` and
+``arg_numeric`` carry any number the agent supplies, negative ones
+included, so their range keeps the places below ``c_lo`` even when that
+is below 0. ``arg_numeric`` is read on the integers: a real argument
+strictly between two consecutive integer constants has no counterpart.
 
 Finite traces
 -------------
@@ -50,17 +79,19 @@ Usage
     text = export_logics(system.contracts, name="bank")
     open("bank.logics", "w").write(text)
 
-    # with CHASE's Python bindings (pychase, pychase_logicsLang) installed:
+    # with chase_cps (CHASE's Python package) and nuXmv installed:
     from contragent.analysis.chase import ChaseSession
-    s = ChaseSession("bank.logics")
-    s.verify("c1", "bank_c1.smv")   # NuSMV model with its VAR block filled in
+    s = ChaseSession.from_file("bank.logics")
+    s.verify("c1").status            # sat, or unsat; each part carries its trace
+    s.refines("c1", "c2")            # valid, or invalid with a counterexample
+    s.unsat_core()                   # the terms that cannot hold together
 
 or ``contragent export-chase --config LIB -o LIB.logics``.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -102,7 +133,7 @@ class ChaseExportError(ValueError):
 
 
 class ChaseUnavailable(RuntimeError):
-    """CHASE's Python bindings (``pychase_logicsLang``) are not installed."""
+    """CHASE's Python package (``chase_cps``) is not installed, or is too old."""
 
 
 # CHASE's console (verify, refinement, synthesize) crashes on contract names
@@ -130,22 +161,67 @@ class _Symbols:
 
     propositions: dict[str, str] = field(default_factory=dict)  # ident -> comment
     integers: dict[str, str] = field(default_factory=dict)  # ident -> comment
-    bounds: dict[str, int] = field(default_factory=dict)  # ident -> largest compared constant
+    constants: dict[str, set[float]] = field(default_factory=dict)  # ident -> compared constants
+    links: dict[str, set[str]] = field(default_factory=dict)  # ident -> compared integers
     saturating: set[str] = field(default_factory=set)
+    nonnegative: set[str] = field(default_factory=set)  # lengths: never below 0
 
     def proposition(self, ident: str, comment: str) -> str:
         self.propositions.setdefault(ident, comment)
         return ident
 
-    def integer(self, ident: str, comment: str, *, saturating: bool) -> str:
+    def integer(
+        self, ident: str, comment: str, *, saturating: bool, nonnegative: bool = False
+    ) -> str:
         self.integers.setdefault(ident, comment)
         if saturating:
             self.saturating.add(ident)
+        if nonnegative:
+            self.nonnegative.add(ident)
         return ident
 
-    def note_bound(self, ident: str, value: float) -> None:
-        if ident in self.integers:
-            self.bounds[ident] = max(self.bounds.get(ident, 0), int(value) + 1)
+    def note_constant(self, ident: str, value: float) -> None:
+        self.constants.setdefault(ident, set()).add(float(value))
+
+    def note_link(self, a: str, b: str) -> None:
+        self.links.setdefault(a, set()).add(b)
+        self.links.setdefault(b, set()).add(a)
+
+    def _group(self, ident: str) -> list[str]:
+        """The integers connected to ``ident`` by comparisons between variables."""
+        group, todo = [ident], [ident]
+        while todo:
+            for other in sorted(self.links.get(todo.pop(), ())):
+                if other not in group:
+                    group.append(other)
+                    todo.append(other)
+        return group
+
+    def ranges(self) -> dict[str, tuple[int, int]]:
+        """The declared range of every integer; the module docstring says why it is exact."""
+        out: dict[str, tuple[int, int]] = {}
+        for ident in self.integers:
+            if ident in out:
+                continue
+            group = self._group(ident)
+            consts = set().union(*(self.constants.get(v, set()) for v in group))
+            n = len(group)
+            if consts:
+                lo, hi = math.floor(min(consts)) - n, math.ceil(max(consts)) + n
+            else:
+                lo, hi = 0, n - 1
+            if any(v in self.saturating or v in self.nonnegative for v in group):
+                # n places from 0 up for the values of a group whose constants are all negative.
+                hi = max(hi, n - 1)
+            for v in group:
+                if v in self.saturating:
+                    # A counter is never negative; K = hi stands for every larger count.
+                    out[v] = (0, max(hi, 1))
+                elif v in self.nonnegative:
+                    out[v] = (max(lo, 0), hi)
+                else:
+                    out[v] = (lo, hi)
+        return out
 
 
 def _term(term: Any, sym: _Symbols) -> tuple[str, str | None]:
@@ -164,7 +240,10 @@ def _term(term: Any, sym: _Symbols) -> tuple[str, str | None]:
         if term.name in ("arg_length", "ArgLength") and len(term.args) == 2:
             ident = _ident("len", *term.args)
             return sym.integer(
-                ident, f"arg_length({term.args[0]}, {term.args[1]})", saturating=False
+                ident,
+                f"arg_length({term.args[0]}, {term.args[1]})",
+                saturating=False,
+                nonnegative=True,
             ), ident
         if term.name in ("ctx_value", "CtxValue") and len(term.args) == 1:
             ident = _ident("ctx", term.args[0])
@@ -178,7 +257,9 @@ def _term(term: Any, sym: _Symbols) -> tuple[str, str | None]:
         ), ident
     if isinstance(term, ArgLength):
         ident = _ident("len", term.tool, term.field)
-        return sym.integer(ident, f"arg_length({term.tool}, {term.field})", saturating=False), ident
+        return sym.integer(
+            ident, f"arg_length({term.tool}, {term.field})", saturating=False, nonnegative=True
+        ), ident
     if isinstance(term, CtxValue):
         ident = _ident("ctx", term.key)
         return sym.integer(ident, f"ctx_value({term.key})", saturating=False), ident
@@ -193,9 +274,11 @@ def _relation(node: Any, op: str, sym: _Symbols) -> str:
     left, lvar = _term(node.left, sym)
     right, rvar = _term(node.right, sym)
     if lvar and isinstance(node.right, Const):
-        sym.note_bound(lvar, node.right.value)
+        sym.note_constant(lvar, node.right.value)
     if rvar and isinstance(node.left, Const):
-        sym.note_bound(rvar, node.left.value)
+        sym.note_constant(rvar, node.left.value)
+    if lvar and rvar:
+        sym.note_link(lvar, rvar)
     return f"({left} {op} {right})"
 
 
@@ -303,15 +386,12 @@ def export_logics(
         out.append(f"proposition {ident};  # {_comment(comment)}")
     if sym.integers:
         out.append("")
-        out.append("# --- quantities: saturating counters carry an explicit range ---")
+        out.append("# --- quantities: integers over the range their comparisons tell apart ---")
+        ranges = sym.ranges()
         for ident, comment in sym.integers.items():
-            if ident in sym.saturating:
-                bound = sym.bounds.get(ident, 1)
-                out.append(
-                    f"integer (0:{bound}) variable {ident};  # {comment}, saturates at {bound}"
-                )
-            else:
-                out.append(f"integer variable {ident};  # {_comment(comment)}")
+            lo, hi = ranges[ident]
+            note = f", saturates at {hi}" if ident in sym.saturating else ""
+            out.append(f"integer ({lo}:{hi}) variable {ident};  # {_comment(comment)}{note}")
     out.append("")
     if finite:
         out.append("# Finite-trace axiom: a non-empty prefix, then alive is false forever.")
@@ -356,93 +436,186 @@ def export_library(
 
 
 # ----------------------------------------------------------------------
-# Optional: drive the CHASE console through its Python bindings
+# Optional: check an exported library with chase_cps
 # ----------------------------------------------------------------------
 
 
 def is_available() -> bool:
-    """True when CHASE's ``pychase_logicsLang`` module can be imported."""
-    return importlib.util.find_spec("pychase_logicsLang") is not None
+    """True when ``chase_cps`` and the CHASE modules it is built on can be imported."""
+    try:
+        # chase_cps imports without its compiled modules and fails at the first
+        # check; _native is where they load, until chase_cps has a public check.
+        import chase_cps._native  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def unavailable_reason() -> str:
     return (
-        "CHASE's Python bindings are not installed. Build chase-cps/core-library "
-        "and chase-cps/logics_tool with pybind11 (https://chase-cps.github.io) and put "
-        "the resulting pychase / pychase_logicsLang modules on PYTHONPATH."
+        "chase_cps, the Python package of CHASE, is not installed: pip install "
+        "'chase-cps>=0.2.0' (or 'contragent[chase]'). The checks run nuXmv; "
+        "`chase-cps doctor` shows the tools found."
     )
 
 
 class ChaseSession:
-    """A CHASE logics console loaded with an exported specification.
+    """The contracts of an exported specification, read by ``chase_cps``.
 
-    Wraps ``pychase_logicsLang.LogicsSpecsBuilder`` (parser) and
-    ``pychase_logicsLang.Console`` (commands such as ``verify <contract>
-    <file.smv>``, ``refinement <c1> <c2> <file>``, ``synthesize <contract>
-    <file>``). Requires the CHASE bindings; see :func:`unavailable_reason`.
+    ``contracts`` maps each contract identifier (``c1``, ``c2``, ...) to a
+    ``chase_cps.Contract`` over the variables the contract uses. The
+    finite-trace axiom of a ``semantics="finite"`` export is kept apart in
+    ``axiom``, and every check below reads the contracts on the traces it
+    allows. The checks run nuXmv through ``chase_cps`` and return its
+    results, with a status, the counterexample or witness trace, and the
+    core. Requires ``chase_cps``; see :func:`unavailable_reason`.
     """
 
-    def __init__(self, logics_path: str | Path, workdir: str | Path | None = None) -> None:
+    def __init__(self, text: str) -> None:
         if not is_available():
             raise ChaseUnavailable(unavailable_reason())
-        # The console module returns core types (System, Contract); importing the
-        # core bindings first registers them with pybind11.
-        import pychase  # type: ignore[import-not-found]  # noqa: F401
-        import pychase_logicsLang as _cl  # type: ignore[import-not-found]
+        import chase_cps  # type: ignore[import-not-found]
 
-        self.logics_path = Path(logics_path)
-        self.workdir = Path(workdir) if workdir is not None else self.logics_path.parent
-        self._builder = _cl.LogicsSpecsBuilder()
-        self._builder.parseSpecificationFile(str(self.logics_path))
-        self.system = self._builder.getSystem()
-        # The console joins its output directory and file names by concatenation.
-        self._console = _cl.Console(self.system, str(self.workdir) + "/")
+        self._cps = chase_cps
+        self.text = text
+        parsed = chase_cps.parse_spec(text)
+        finite = parsed.pop(FINITE_TRACE_CONTRACT, None)
+        self.axiom: list = list(finite.guarantees) if finite is not None else []
+        self._axiom_vars: dict = dict(finite.variables) if finite is not None else {}
+        self.contracts: dict[str, Any] = {
+            ident: parsed[ident] for ident in contract_identifiers(text) if ident in parsed
+        }
+        # chase-cps before 0.2.0 leaves the declarations at the top of a
+        # specification on the system, so its contracts come back without variables.
+        for c in self.contracts.values():
+            used = chase_cps.ltl.variables(chase_cps.ltl.conjunction(c.assumptions + c.guarantees))
+            if not used <= set(c.variables):
+                raise ChaseUnavailable(
+                    "this chase_cps does not give contracts the declarations shared at "
+                    "the top of a specification. " + unavailable_reason()
+                )
 
-    def run(self, command: str) -> int:
-        """Run one console command; returns the console's status code.
+    @classmethod
+    def from_file(cls, logics_path: str | Path) -> ChaseSession:
+        """A session on an exported ``.logics`` file."""
+        return cls(Path(logics_path).read_text())
 
-        The semicolon that terminates commands in a ``logics_tool`` command
-        file is stripped by that tool before the console sees the command;
-        the console API takes the bare command, so a trailing one is removed.
-        """
-        return self._console.run(command.strip().rstrip(";").strip())
-
-    def verify(
-        self,
-        contract: str,
-        out_file: str,
+    @classmethod
+    def from_library(
+        cls,
+        contracts: Sequence[Any],
         *,
-        declare: bool = True,
-        int_range: tuple[int, int] | None = None,
-    ) -> int:
-        """Emit the NuSMV model of ``contract`` (CHASE ``verify``).
+        name: str = "contragent_library",
+        semantics: str = "finite",
+    ) -> ChaseSession:
+        """A session on ``export_logics(contracts, ...)``."""
+        return cls(export_logics(contracts, name=name, semantics=semantics))
 
-        The model negates the assumption and the guarantee as two ``LTLSPEC``
-        properties, so a property reported false by nuXmv (with a
-        counterexample) means the formula is satisfiable. With ``declare``
-        the ``VAR`` block, which CHASE leaves empty for specifications read
-        from a logics file, is filled from the declarations of the export;
-        see :func:`smv_declarations` for ``int_range``.
+    def _variables(self, contracts: Sequence[Any]) -> dict:
+        variables = dict(self._axiom_vars) if self.axiom else {}
+        for c in contracts:
+            variables.update(c.variables)
+        return variables
+
+    def on_traces(self, ident: str) -> Any:
+        """The contract with the finite-trace axiom as one more assumption.
+
+        Refinement and redundancy read this contract exactly: both are
+        implications whose premise contains the assumptions, so the axiom
+        restricts them to the encodings of finite traces.
         """
-        if "smv" not in out_file:  # mirrors the console's naming rule
-            out_file += ".smv"
-        rc = self.run(f"verify {contract} {out_file}")
-        smv = self.workdir / out_file
-        if declare and smv.exists():
-            lines = smv_declarations(self.logics_path.read_text(), int_range=int_range)
-            text = smv.read_text()
-            if lines and "\nVAR\n" in text:
-                smv.write_text(text.replace("\nVAR\n", "\nVAR\n" + "".join(lines), 1))
-        return rc
+        c = self.contracts[ident]
+        if not self.axiom:
+            return c
+        return self._cps.Contract(
+            c.name,
+            dict(c.inputs),
+            {**self._axiom_vars, **c.outputs},
+            [*self.axiom, *c.assumptions],
+            list(c.guarantees),
+        )
 
-    def refinement(self, refined: str, abstract: str, out_file: str) -> int:
-        """Emit the refinement-check model for ``refined`` <= ``abstract``.
+    def verify(self, ident: str, **options: Any) -> Any:
+        """Compatibility and consistency of a contract (``chase_cps.verify``).
 
-        CHASE's console crashes here on specifications read from a logics
-        file (the parser leaves the declarations on the system rather than on
-        the contracts); :meth:`PychaseTranslator.refines` is the working path.
+        On finite traces compatibility is ``axiom & A`` satisfiable and
+        consistency ``axiom & (A -> G)`` satisfiable. CHASE's consistency
+        check, ``A -> G`` satisfiable, would hold on any word that breaks
+        the axiom, so it runs on the contract ``(true, axiom & (A -> G))``.
         """
-        return self.run(f"refinement {refined} {abstract} {out_file}")
+        cps = self._cps
+        if not self.axiom:
+            return cps.verify(self.contracts[ident], **options)
+        c = self.on_traces(ident)
+        whole = cps.Contract(
+            c.name,
+            dict(c.inputs),
+            dict(c.outputs),
+            [],
+            [*self.axiom, self.contracts[ident].saturated_guarantee],
+        )
+        return cps.Verification(
+            cps.is_compatible(c, **options), cps.is_consistent(whole, **options)
+        )
+
+    def refines(self, refined: str, abstract: str, **options: Any) -> Any:
+        """Whether ``refined`` refines ``abstract`` (``chase_cps.refines``)."""
+        return self._cps.refines(self.on_traces(refined), self.on_traces(abstract), **options)
+
+    def remove_redundant(self, ident: str, **options: Any) -> Any:
+        """The contract without the terms implied by the others (``chase_cps.remove_redundant``)."""
+        r = self._cps.remove_redundant(self.on_traces(ident), **options)
+        r.contract.assumptions = [t for t in r.contract.assumptions if t not in self.axiom]
+        r.removed_assumptions = [t for t in r.removed_assumptions if t not in self.axiom]
+        return r
+
+    def unsat_core(self, idents: Sequence[str] | None = None, **options: Any) -> Any:
+        """A minimal set of terms of the contracts that cannot hold together.
+
+        The terms are the assumptions and the guarantees of the contracts,
+        the conjunction :func:`contragent.analysis.check_conflicts` checks,
+        with the finite-trace axiom as an assumption; ``chase_cps.unsat_core``
+        returns a contract with the terms of the core, and
+        :meth:`contracts_in` names the contracts they come from.
+        """
+        chosen = [self.contracts[i] for i in (idents or self.contracts)]
+        library = self._cps.Contract(
+            "library",
+            {},
+            self._variables(chosen),
+            [*self.axiom, *(t for c in chosen for t in c.assumptions)],
+            [t for c in chosen for t in c.guarantees],
+        )
+        return self._cps.unsat_core(library, **options)
+
+    def contracts_in(self, core: Any, idents: Sequence[str] | None = None) -> list[str]:
+        """The identifiers of the contracts an :meth:`unsat_core` core comes from.
+
+        ``idents`` are the contracts the core was searched in. A core holds
+        terms, not their positions, so a term that several contracts share
+        (in ``university.yaml`` seventeen pairs of contracts share a term)
+        is put down to the first of them; a minimal core holds one copy of it.
+        """
+        chosen = list(idents or self.contracts)
+        found = set()
+        for t in list(core.core.assumptions) + list(core.core.guarantees):
+            for ident in chosen:
+                c = self.contracts[ident]
+                if t in c.assumptions or t in c.guarantees:
+                    found.add(ident)
+                    break
+        return [ident for ident in chosen if ident in found]
+
+    def conjoin(self, idents: Sequence[str], name: str = "library") -> Any:
+        """The CHASE conjunction of the contracts (``chase_cps.Contract.conjoin``).
+
+        Conjunction is the operation for several contracts on the *same*
+        component, which is what a library of contracts on one agent is.
+        """
+        acc = self.contracts[idents[0]]
+        for ident in idents[1:]:
+            acc = acc.conjoin(self.contracts[ident], name=name)
+        return acc
 
 
 def contract_identifiers(text: str) -> list[str]:
@@ -451,21 +624,23 @@ def contract_identifiers(text: str) -> list[str]:
 
 
 _DECL_RE = re.compile(
-    r"^(?P<kind>proposition|integer(?: \((?P<lo>\d+):(?P<hi>\d+)\))? variable) (?P<name>[A-Za-z]\w*);",
+    r"^(?P<kind>proposition|integer(?: \((?P<lo>-?\d+):(?P<hi>-?\d+)\))? variable)"
+    r" (?P<name>[A-Za-z]\w*);",
     flags=re.M,
 )
 
 
 def smv_declarations(text: str, *, int_range: tuple[int, int] | None = None) -> list[str]:
-    """NuSMV ``VAR`` lines for the declarations of an exported specification.
+    """NuSMV ``VAR`` lines for the declarations of a logics specification.
 
-    CHASE's NuSMV printer writes only the variables attached to the contract,
-    and its logics parser attaches declarations to the system, so the model
-    that ``verify`` emits has an empty ``VAR`` block. Propositions become
-    booleans and ranged integers keep their range. An unbounded integer gets
-    ``int_range`` when one is given (nuXmv's BDD algorithms need finite
-    domains) and the ``integer`` type otherwise (for its SMT-based
-    algorithms, e.g. ``msat_check_ltlspec_bmc``).
+    The ``verify`` command of the standalone ``logics_tool`` writes only the
+    variables attached to the contract, and its parser attaches the
+    declarations to the system, so the model it emits for an exported
+    specification has an empty ``VAR`` block. Propositions become booleans
+    and ranged integers keep their range. An integer without a range (not
+    written by :func:`export_logics`) gets ``int_range`` when one is given
+    (nuXmv's BDD algorithms need finite domains) and the ``integer`` type
+    otherwise (for its SMT-based algorithms, e.g. ``msat_check_ltlspec_bmc``).
     """
     lines: list[str] = []
     for m in _DECL_RE.finditer(text):
@@ -494,147 +669,3 @@ __all__ = [
     "is_available",
     "unavailable_reason",
 ]
-
-
-# ----------------------------------------------------------------------
-# Optional: build CHASE contracts directly through ``pychase``
-# ----------------------------------------------------------------------
-
-
-class PychaseTranslator:
-    """Translate contracts into ``pychase`` objects for CHASE's contract algebra.
-
-    Uses the same grounding as :func:`export_logics`: each instantiated
-    predicate becomes a boolean variable named by its key, and every
-    comparison is abstracted to a boolean proposition named by its canonical
-    text, so the propositional-temporal structure that CHASE's logic-domain
-    algebra reasons over is preserved. Reuse one translator across the
-    contracts you intend to compose so shared atoms map to the same variable.
-    Requires ``pychase`` (chase-cps/core-library built with pybind11).
-    """
-
-    def __init__(self) -> None:
-        if importlib.util.find_spec("pychase") is None:
-            raise ChaseUnavailable(unavailable_reason())
-        import pychase  # type: ignore[import-not-found]
-
-        self._rep = pychase.representation
-        self._u = pychase.utilities
-        self._logic = self._rep.semantic_domain.logic
-        self.variables: dict[str, Any] = {}
-        self.names: dict[str, str] = {}
-
-    def _prop(self, key: str, comment: str) -> Any:
-        if key not in self.variables:
-            name = _ident("p", comment)
-            suffix = 2
-            while name in self.names and self.names[name] != key:
-                name = f"{_ident('p', comment)}_{suffix}"
-                suffix += 1
-            self.variables[key] = self._rep.Variable(self._rep.Boolean(), self._rep.Name(name))
-            self.names[name] = key
-        return self._u.Prop(self.variables[key])
-
-    def formula(self, node: Any) -> Any:
-        """Translate one formula node into a CHASE ``LogicFormula``."""
-        u = self._u
-        if isinstance(node, Atom):
-            return self._prop(node.key(), f"{node.predicate}_{'_'.join(node.args)}")
-        if isinstance(node, Subset):
-            return self._prop(repr(node), f"subset_{node.left}_{node.right}")
-        if isinstance(node, Not):
-            return u.Not(self.formula(node.child))
-        if isinstance(node, And):
-            return u.And(self.formula(node.left), self.formula(node.right))
-        if isinstance(node, Or):
-            return u.Or(self.formula(node.left), self.formula(node.right))
-        if isinstance(node, Implies):
-            return u.Implies(self.formula(node.left), self.formula(node.right))
-        if isinstance(node, G):
-            return u.Always(self.formula(node.child))
-        if isinstance(node, F):
-            return u.Eventually(self.formula(node.child))
-        if isinstance(node, X):
-            return u.Next(self.formula(node.child))
-        if isinstance(node, U):
-            return u.Until(self.formula(node.left), self.formula(node.right))
-        if isinstance(node, (Le, Lt, Ge, Gt, Eq)):
-            # predicate abstraction: the comparison is an opaque proposition
-            sym = _Symbols()
-            text = _relation(node, {Le: "<=", Lt: "<", Ge: ">=", Gt: ">", Eq: "="}[type(node)], sym)
-            return self._prop(repr(node), text)
-        raise ChaseExportError(f"unsupported formula node {type(node).__name__}")
-
-    def _conjoin(self, items: list) -> Any | None:
-        formulas = [self.formula(_raw(x)) for x in items]
-        if not formulas:
-            return None
-        return formulas[0] if len(formulas) == 1 else self._u.LargeAnd(formulas)
-
-    def contract(self, contract: Any, name: str | None = None) -> Any:
-        """A CHASE ``Contract`` with all referenced variables declared."""
-        cname = name or _ident("c", getattr(contract, "desc", None) or "contract")
-        c = self._rep.Contract(cname)
-        g = self._conjoin(_as_list(getattr(contract, "guarantees", [])))
-        if g is None:
-            raise ChaseExportError(f"contract {cname!r} has no guarantee")
-        c.addGuarantees(self._logic, g)
-        a = self._conjoin(_as_list(getattr(contract, "assumptions", [])))
-        if a is not None:
-            c.addAssumptions(self._logic, a)
-        for var in self.variables.values():
-            c.addDeclaration(var)
-        return c
-
-    @staticmethod
-    def shared_variables(a: Any, b: Any) -> dict[str, str]:
-        """Identity correspondences over the variables two CHASE contracts share.
-
-        CHASE keeps each contract's declarations separate and treats a name
-        that appears in both as a clash unless the correspondence is given.
-        """
-        names_a = {d.getName().getString() for d in a.declarations}
-        names_b = {d.getName().getString() for d in b.declarations}
-        return {n: n for n in names_a & names_b}
-
-    def _fold(self, op: str, contracts: Sequence[Any], name: str) -> Any:
-        chase = [
-            self.contract(c, _ident(f"c{i}", getattr(c, "desc", "") or ""))
-            for i, c in enumerate(contracts, 1)
-        ]
-        for cc in chase:
-            self._rep.Contract.saturate(cc)
-        fn = getattr(self._rep.Contract, op)
-        acc = chase[0]
-        for cc in chase[1:]:
-            acc = fn(acc, cc, self.shared_variables(acc, cc), name)
-        return acc
-
-    def conjoin(self, contracts: Sequence[Any], name: str = "library") -> Any:
-        """Saturate every contract and fold CHASE ``conjunction`` over the library.
-
-        Conjunction is the operation for several contracts on the *same*
-        component, which is what a library of contracts on one agent is.
-        """
-        return self._fold("conjunction", contracts, name)
-
-    def compose(self, contracts: Sequence[Any], name: str = "library") -> Any:
-        """Saturate every contract and fold CHASE ``composition`` over the library."""
-        return self._fold("composition", contracts, name)
-
-    def refines(self, refined: Any, abstract: Any, *, name: str = "refinement") -> Any:
-        """Build CHASE's refinement-check contract for ``refined`` <= ``abstract``.
-
-        ``Contract.refinementCheck`` returns a contract whose assumption is
-        ``A_abstract -> A_refined`` and whose guarantee is
-        ``G_refined -> G_abstract`` over the variables the two share; the
-        refinement holds when both are valid, which CHASE's back ends decide.
-        Use this path rather than the console's ``refinement`` command,
-        which crashes on specifications read from a logics file.
-        """
-        a = self.contract(refined, "refined")
-        b = self.contract(abstract, "abstract")
-        return self._rep.Contract.refinementCheck(a, b, self.shared_variables(a, b), name)
-
-
-__all__ += ["PychaseTranslator"]

@@ -26,7 +26,7 @@ _FORMULA_TOKEN = re.compile(
 )
 _DECL = re.compile(
     r"^(?:proposition [A-Za-z][A-Za-z0-9_]*;"
-    r"|integer(?: \(\d+:\d+\))? variable [A-Za-z][A-Za-z0-9_]*;)"
+    r"|integer(?: \(-?\d+:-?\d+\))? variable [A-Za-z][A-Za-z0-9_]*;)"
 )
 
 
@@ -84,7 +84,7 @@ class TestGrammarShape:
         lines = _strip_comments(text)
         declared = set(
             re.findall(
-                r"^(?:proposition|integer(?: \(\d+:\d+\))? variable) ([A-Za-z]\w*);",
+                r"^(?:proposition|integer(?: \(-?\d+:-?\d+\))? variable) ([A-Za-z]\w*);",
                 text,
                 flags=re.M,
             )
@@ -121,13 +121,42 @@ class TestGrounding:
         )
         assert "integer (0:8) variable v_count_send;" in text
 
-    def test_argument_quantities_are_unbounded_integers(self):
+    def test_argument_quantities_range_over_their_constants(self):
         text = export_logics(
-            _contracts((None, "G((called('t') -> (ArgValue('t', 'amount') <= 42)))")),
+            _contracts(
+                (None, "G((called('t') -> (ArgValue('t', 'amount') <= 42)))"),
+                (None, "G((ArgValue('t', 'amount') > 90))"),
+            ),
             semantics="infinite",
         )
-        assert "integer variable num_t_amount;" in text
+        assert "integer (41:91) variable num_t_amount;" in text
         assert "(num_t_amount <= 42)" in text
+
+    def test_compared_quantities_share_a_widened_range(self):
+        text = export_logics(
+            _contracts(
+                (None, "G(((ArgValue('t', 'a') < ArgValue('t', 'b')) & (ArgValue('t', 'a') >= 5)))")
+            ),
+            semantics="infinite",
+        )
+        assert "integer (3:7) variable num_t_a;" in text
+        assert "integer (3:7) variable num_t_b;" in text
+
+    def test_lengths_are_never_negative(self):
+        text = export_logics(
+            _contracts(
+                (None, "G((ArgLength('t', 'items') > 0))"),
+                (None, "G((CtxValue('balance') > 0))"),
+            ),
+            semantics="infinite",
+        )
+        assert "integer (0:1) variable len_t_items;" in text
+        assert "integer (-1:1) variable ctx_balance;" in text
+
+    def test_every_integer_has_a_range(self):
+        for path in bundled_libraries_root().rglob("*.yaml"):
+            text = export_library(path)
+            assert not re.search(r"^integer variable", text, flags=re.M), path
 
     def test_predicates_become_propositions_named_by_key(self):
         text = export_logics(

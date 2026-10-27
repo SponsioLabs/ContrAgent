@@ -14,7 +14,27 @@ project uses [semantic versioning](https://semver.org/).
   a contract without any is reported under its formula read back in
   words (`contragent.config.describe_formula`).
 
+- The CHASE bridge checks an export with `chase_cps`, CHASE's Python
+  package (0.2.0 or later; the `chase` extra installs it): `ChaseSession`
+  reads the export with `chase_cps.parse_spec` and offers `verify`,
+  `refines`, `remove_redundant`, `unsat_core`, and `conjoin`, which
+  return the results of `chase_cps` with their status, traces, and
+  cores, and read a finite-trace export on finite traces.
+  `ChaseSession(text)` takes the text of the export;
+  `ChaseSession.from_file` and `from_library` build one from a file or a
+  library. `PychaseTranslator` and the console methods `run` and
+  `refinement` are gone with the raw `pychase` calls.
+
 ### Fixed
+- The CHASE export declares every integer with a range. The logics
+  language gives an integer without one the values 0..16, and 710
+  integers of the SOP-Bench libraries had none, so a comparison with a
+  larger constant (`university.yaml` compares with 90) was checked on
+  the wrong values. A counter ranges over `(0:K)` and any other integer
+  over its compared constants widened by one. Integers compared with each
+  other share one range, the union of their constants widened by the
+  number of integers in the group, or `(0:n-1)` for `n` integers compared
+  with no constant.
 - Contracts built with the fluent helper (`contract(...).guarantees(...)`)
   or from raw formulas now flag their unbounded eventualities, so
   `finish_session()` reports an owed `F` obligation for them as it
