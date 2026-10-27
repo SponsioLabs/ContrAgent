@@ -15,8 +15,8 @@ project uses [semantic versioning](https://semver.org/).
   words (`contragent.config.describe_formula`).
 
 - The CHASE bridge checks an export with `chase_cps`, CHASE's Python
-  package (a release after 0.2.0 whose checks take `context=`; the
-  `chase` extra installs it): `ChaseSession` reads the export with
+  package (chase-cps 0.3, whose checks take `context=`; the `chase`
+  extra installs it): `ChaseSession` reads the export with
   `chase_cps.parse_spec` and offers `verify`, `refines`,
   `remove_redundant`, `unsat_core`, and `conjoin`, which return the
   results of `chase_cps` with their status, traces, and cores, and read

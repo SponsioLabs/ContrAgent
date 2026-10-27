@@ -481,10 +481,9 @@ def is_available() -> bool:
 def unavailable_reason() -> str:
     return (
         "chase_cps, the Python package of CHASE, is not installed, or does not "
-        "take the context= of a check: install a chase-cps released after 0.2.0 "
-        "(or 'contragent[chase]'); until that release, the contract-ops branch: "
-        "pip install 'chase-cps @ git+https://github.com/chase-cps/chase@contract-ops'. "
-        "The checks run nuXmv; `chase-cps doctor` shows the tools found."
+        "take the context= of a check: pip install 'chase-cps>=0.3.0,<0.4' "
+        "(or 'contragent[chase]'). The checks run nuXmv; `chase-cps doctor` shows "
+        "the tools found."
     )
 
 
