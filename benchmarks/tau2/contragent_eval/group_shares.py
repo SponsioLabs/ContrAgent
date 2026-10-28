@@ -11,6 +11,7 @@ each rule group:
 
 Run with PYTHONPATH=<repo>; traces are expected where eval_proc.py reads them.
 """
+
 import json
 import sys
 from collections import defaultdict
@@ -60,14 +61,20 @@ def main():
                 "domain": domain,
                 "model": model,
                 "tau2_pass_sims": n_pass,
-                "share_pct": {g: 100.0 * hits[g] / n_pass for g in ("sameturn", "argvalue", "lookup", "limit")},
+                "share_pct": {
+                    g: 100.0 * hits[g] / n_pass for g in ("sameturn", "argvalue", "lookup", "limit")
+                },
             }
         )
     out.sort(key=lambda r: (order.get(r["domain"], 9), r["model"]))
-    print(f"{'domain':8} {'model':28} {'n_pass':>6} {'sameturn':>9} {'argvalue':>9} {'lookup':>7} {'limit':>6}")
+    print(
+        f"{'domain':8} {'model':28} {'n_pass':>6} {'sameturn':>9} {'argvalue':>9} {'lookup':>7} {'limit':>6}"
+    )
     for r in out:
         s = r["share_pct"]
-        print(f"{r['domain']:8} {r['model']:28} {r['tau2_pass_sims']:6d} {s['sameturn']:9.1f} {s['argvalue']:9.1f} {s['lookup']:7.1f} {s['limit']:6.1f}")
+        print(
+            f"{r['domain']:8} {r['model']:28} {r['tau2_pass_sims']:6d} {s['sameturn']:9.1f} {s['argvalue']:9.1f} {s['lookup']:7.1f} {s['limit']:6.1f}"
+        )
     dest = HERE / "group_shares.json"
     dest.write_text(json.dumps(out, indent=2))
     print(f"\nWrote {dest}")
