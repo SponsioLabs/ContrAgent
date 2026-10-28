@@ -42,7 +42,7 @@ among tau2-passing traces (paper Figure 7):
 Across the 4,464-trace matrix Claude 3.7 reaches an outcome `pass^4` of
 25% to 60% yet a `joint^4` of 0% in all three domains: no task is completed
 reliably without at least one procedural violation. The contract library
-decides this deterministically for every trace, at 0.83 ms p50 per call
+decides this deterministically for every trace, at 0.59 ms p50 per call
 (appendix latency table), where an LLM judge approximates it.
 
 ## Reproduce
