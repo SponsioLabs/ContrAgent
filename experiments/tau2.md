@@ -19,16 +19,25 @@ outcome is correct and no contract fires, in all k retries.
 
 ## Contracts
 
-`contragent/contracts/benchmark/tau2_bench.yaml`: 120 contracts (retail 45,
-airline 32, telecom 40, cross-domain 3) covering identity gates, ordering,
-argument grounding, forbidden transitions, post-action verification, and
-same-turn protocol. Four contracts that compare two argument fields
-(item-count match, distinct payment method, passenger cap) are excluded
-from the reported rates by the harness, as in the paper.
+`contragent/contracts/benchmark/tau2_bench.yaml`: 110 contracts (retail 39,
+airline 28, telecom 40, cross-domain 3) covering identity gates, ordering,
+argument grounding, forbidden transitions, and the same-turn protocol. Every
+contract traces to a sentence of the domain's `policy.md`; ten post-write
+re-read contracts that had no policy source were removed in the v2 revision.
+Four contracts that compare two argument fields (item-count match, distinct
+payment method, passenger cap) are excluded from the reported rates by the
+harness, as in the paper. The offline replay evaluates the 43 contracts
+(37 distinct rules) that are decidable from tool names, arguments, and
+call order alone; contracts that need environment facts (order status,
+authentication state) are skipped, see
+[`benchmarks/tau2/contragent_eval/README.md`](../benchmarks/tau2/contragent_eval/README.md).
 
-## Results (paper Figure `fig:tau2tax`)
+## Results (paper Figures `fig:tau2tax` and `fig:tau2contract`)
 
-Summary file: [`results/tau2_proc_eval.json`](results/tau2_proc_eval.json).
+Summary file: [`results/tau2_proc_eval.json`](results/tau2_proc_eval.json)
+(per-cell `pass^4` / `proc-clean^4` / `joint^4`). Per-rule-group shares
+among tau2-passing traces (paper Figure 7):
+[`results/tau2_group_shares.json`](results/tau2_group_shares.json).
 
 Across the 4,464-trace matrix Claude 3.7 reaches an outcome `pass^4` of
 25% to 60% yet a `joint^4` of 0% in all three domains: no task is completed
@@ -47,4 +56,5 @@ PYTHONPATH=. python benchmarks/tau2/contragent_eval/eval_proc.py
 ```
 
 `eval_proc.py` writes `proc_eval_results.json` with per-cell fire rates and
-the `pass^k` / `proc-clean^k` / `joint^k` matrix.
+the `pass^k` / `proc-clean^k` / `joint^k` matrix;
+`group_shares.py` writes the per-rule-group shares behind Figure 7.

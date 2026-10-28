@@ -146,8 +146,9 @@ def test_shipped_sopbench_library_passes():
 def test_shipped_tau2_library_obligations_are_checked():
     system = load_system(ROOT / "contragent" / "contracts" / "benchmark" / "tau2_bench.yaml")
     report = check_dead_ends(system.contracts)
-    # The ten called-trigger obligations have no bound on their required tools.
-    assert len(report.obligations) == 10
+    # The shipped library carries call-count bounds but no called-trigger
+    # obligations (the post-write re-read contracts were removed in v2), so
+    # the dead-end check has nothing to flag.
+    assert report.obligations == []
     assert report.bounded_tools["cancel_pending_order"] == 2
     assert report.ok
-    assert report.unchecked

@@ -1,0 +1,134 @@
+[
+  {
+    "domain": "retail",
+    "model": "claude-3-7-sonnet-20250219",
+    "tau2_pass_sims": 359,
+    "share_pct": {
+      "sameturn": 98.60724233983287,
+      "argvalue": 0.0,
+      "lookup": 0.8356545961002786,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "retail",
+    "model": "gpt-4.1-2025-04-14",
+    "tau2_pass_sims": 338,
+    "share_pct": {
+      "sameturn": 2.0710059171597632,
+      "argvalue": 0.0,
+      "lookup": 3.2544378698224854,
+      "limit": 0.591715976331361
+    }
+  },
+  {
+    "domain": "retail",
+    "model": "gpt-4.1-mini-2025-04-14",
+    "tau2_pass_sims": 301,
+    "share_pct": {
+      "sameturn": 32.55813953488372,
+      "argvalue": 0.0,
+      "lookup": 4.983388704318937,
+      "limit": 0.6644518272425249
+    }
+  },
+  {
+    "domain": "retail",
+    "model": "o4-mini-2025-04-16",
+    "tau2_pass_sims": 326,
+    "share_pct": {
+      "sameturn": 0.0,
+      "argvalue": 0.0,
+      "lookup": 3.374233128834356,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "airline",
+    "model": "claude-3-7-sonnet-20250219",
+    "tau2_pass_sims": 100,
+    "share_pct": {
+      "sameturn": 97.0,
+      "argvalue": 12.0,
+      "lookup": 6.0,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "airline",
+    "model": "gpt-4.1-2025-04-14",
+    "tau2_pass_sims": 112,
+    "share_pct": {
+      "sameturn": 11.607142857142858,
+      "argvalue": 8.035714285714286,
+      "lookup": 5.357142857142857,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "airline",
+    "model": "gpt-4.1-mini-2025-04-14",
+    "tau2_pass_sims": 101,
+    "share_pct": {
+      "sameturn": 38.613861386138616,
+      "argvalue": 8.910891089108912,
+      "lookup": 3.9603960396039604,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "airline",
+    "model": "o4-mini-2025-04-16",
+    "tau2_pass_sims": 118,
+    "share_pct": {
+      "sameturn": 0.0,
+      "argvalue": 5.932203389830509,
+      "lookup": 3.389830508474576,
+      "limit": 1.694915254237288
+    }
+  },
+  {
+    "domain": "telecom",
+    "model": "claude-3-7-sonnet-20250219",
+    "tau2_pass_sims": 225,
+    "share_pct": {
+      "sameturn": 98.66666666666667,
+      "argvalue": 0.0,
+      "lookup": 20.444444444444443,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "telecom",
+    "model": "gpt-4.1-2025-04-14",
+    "tau2_pass_sims": 156,
+    "share_pct": {
+      "sameturn": 21.153846153846153,
+      "argvalue": 0.0,
+      "lookup": 14.102564102564102,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "telecom",
+    "model": "gpt-4.1-mini-2025-04-14",
+    "tau2_pass_sims": 200,
+    "share_pct": {
+      "sameturn": 58.5,
+      "argvalue": 13.5,
+      "lookup": 17.0,
+      "limit": 0.0
+    }
+  },
+  {
+    "domain": "telecom",
+    "model": "o4-mini-2025-04-16",
+    "tau2_pass_sims": 192,
+    "share_pct": {
+      "sameturn": 0.0,
+      "argvalue": 0.0,
+      "lookup": 46.354166666666664,
+      "limit": 1.0416666666666667
+    }
+  }
+]

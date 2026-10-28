@@ -51,12 +51,12 @@ traces are sufficient for offline procedure-violation scoring.
 
 ## Honest-evaluation policy
 
-The 120-contract library splits, by atom dependency, into:
+The 110-contract library splits, by atom dependency, into:
 
-- **53 honest** — evaluable from real tool names/args/ordering alone:
+- **43 honest** — evaluable from real tool names/args/ordering alone:
   contracts over tool names, argument values, and counts (precedence,
   count limits, argument allow/deny lists, value ranges), pure-LTL
-  ordering + post-action-verification (`called`/`X(called)`), and the
+  ordering (`called`/`U`), and the
   structural `same_turn_text_and_tool_call` protocol flag. **These are
   the only contracts that fire in this eval.**
 - **63 need derived ctx** — depend on policy-derived facts

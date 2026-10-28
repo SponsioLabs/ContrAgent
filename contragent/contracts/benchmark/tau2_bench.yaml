@@ -267,30 +267,6 @@ agents:
       G:
         ltl: "G(Implies(called(modify_pending_order_payment), Not(Eq(ArgValue(modify_pending_order_payment, payment_method_id), CtxValue(original_pm_id)))))"
         source: library:benchmark.tau2/retail/arg_groundedness
-    - desc: modify_pending_order_items must be followed by get_order_details verification
-      G:
-        ltl: "G(called(modify_pending_order_items) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
-    - desc: modify_pending_order_address must be followed by get_order_details verification
-      G:
-        ltl: "G(called(modify_pending_order_address) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
-    - desc: modify_pending_order_payment must be followed by get_order_details verification
-      G:
-        ltl: "G(called(modify_pending_order_payment) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
-    - desc: cancel_pending_order must be followed by get_order_details verification
-      G:
-        ltl: "G(called(cancel_pending_order) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
-    - desc: return_delivered_order_items must be followed by get_order_details verification
-      G:
-        ltl: "G(called(return_delivered_order_items) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
-    - desc: exchange_delivered_order_items must be followed by get_order_details verification
-      G:
-        ltl: "G(called(exchange_delivered_order_items) -> X(called(get_order_details)))"
-        source: library:benchmark.tau2/retail/transition_spec
     - desc: cancel_pending_order should be called at most 2x
       G:
         ltl: "G((Var('count', 'cancel_pending_order') <= 2))"
@@ -391,22 +367,6 @@ agents:
       G:
         ltl: "G(Implies(called(book_reservation), Le(ArgLength(book_reservation, passengers), Const(5))))"
         source: library:benchmark.tau2/airline/argument_spec
-    - desc: update_reservation_flights must be followed by get_reservation_details verification
-      G:
-        ltl: "G(called(update_reservation_flights) -> X(called(get_reservation_details)))"
-        source: library:benchmark.tau2/airline/transition_spec
-    - desc: update_reservation_baggages must be followed by get_reservation_details verification
-      G:
-        ltl: "G(called(update_reservation_baggages) -> X(called(get_reservation_details)))"
-        source: library:benchmark.tau2/airline/transition_spec
-    - desc: update_reservation_passengers must be followed by get_reservation_details verification
-      G:
-        ltl: "G(called(update_reservation_passengers) -> X(called(get_reservation_details)))"
-        source: library:benchmark.tau2/airline/transition_spec
-    - desc: cancel_reservation must be followed by get_reservation_details verification
-      G:
-        ltl: "G(called(cancel_reservation) -> X(called(get_reservation_details)))"
-        source: library:benchmark.tau2/airline/transition_spec
     - desc: cancel_reservation should not be called more than 2x per session
       G:
         ltl: "G((Var('count', 'cancel_reservation') <= 2))"
