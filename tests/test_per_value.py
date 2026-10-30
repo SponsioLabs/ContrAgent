@@ -168,3 +168,10 @@ def test_a_slice_opened_late_starts_after_the_shared_events():
     # Unrelated calls belong to no slice.
     assert f.route(call("spotify__show_song", song_id=1))[0] is None
     assert parse_repr(repr(f)) == f
+
+
+def test_a_tool_pattern_without_per_is_refused():
+    res = compile_ir(
+        ConstraintIR(subject="*__login", object="*__logout", relation="follows", scope="global")
+    )
+    assert res.error and "per" in res.error

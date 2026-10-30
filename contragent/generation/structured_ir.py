@@ -774,6 +774,10 @@ def compile_ir(ir: ConstraintIR) -> IRCompilationResult:
 
     # --- Per value: the relation holds separately for each argument value ---
     per = (ir.params or {}).get("per")
+    if not per and any("*" in (t or "") for t in (ir.subject, ir.object)):
+        # A pattern matches calls only inside ForEach; elsewhere it is vacuous.
+        result.error = "a tool pattern needs 'per' (\"@app\")"
+        return result
     if per:
         try:
             formula_ast, desc = _per_value(ir, relation, per, desc)
