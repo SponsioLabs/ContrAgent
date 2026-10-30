@@ -27,6 +27,7 @@ from contragent.formulas.formula import (
     Const,
     Eq,
     F,
+    ForEach,
     Formula,
     G,
     Ge,
@@ -218,6 +219,9 @@ def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> 
     Raises:
         TypeError: If the formula contains an unknown node type.
     """
+    if isinstance(formula, ForEach):
+        return all(evaluate(formula.child, part) for part in formula.slices(trace[pos:]).values())
+
     if pos >= len(trace):
         # Past end of trace — weak finite-trace semantics:
         #   G(φ) → True  (vacuously globally)
@@ -375,6 +379,11 @@ def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 
 
     n = len(trace)
     idle = idle_valuation(trace[-1]) if trace else {}
+
+    if isinstance(formula, ForEach):
+        return all(
+            evaluate_final(formula.child, part) for part in formula.slices(trace[pos:]).values()
+        )
 
     def ev(f: object, i: int) -> bool:
         if i >= n:

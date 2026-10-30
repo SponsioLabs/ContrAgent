@@ -84,6 +84,7 @@ from contragent.formulas.formula import (
     Atom,
     Const,
     F,
+    ForEach,
     Formula,
     G,
     Ge,
@@ -766,6 +767,15 @@ def compile_ir(ir: ConstraintIR) -> IRCompilationResult:
         result.error = f"LTL synthesis failed for '{relation}': {e}"
         return result
 
+    # --- Per value: the relation holds separately for each argument value ---
+    per = (ir.params or {}).get("per")
+    if per:
+        try:
+            formula_ast, desc = _per_value(ir, relation, per, desc)
+        except ValueError as e:
+            result.error = str(e)
+            return result
+
     # --- Conditional scope: place the guard on the side that can hold it ---
     # An assumption states what the environment is required to keep, so a
     # guard over the agent's own calls is folded into the guarantee as
@@ -809,6 +819,54 @@ def compile_ir(ir: ConstraintIR) -> IRCompilationResult:
     result.compiled_assumption = env_guard
 
     return result
+
+
+#: Relations that take ``params["per"]``.
+PER_VALUE_RELATIONS = frozenset({"precedes", "follows", "limits", "idempotent"})
+
+
+def _at_most(action: str, n: int) -> Formula:
+    """At most ``n`` calls of ``action``, without a counter (a counter is
+    global; this form counts within a slice): ``G(¬a)`` for 0, else
+    ``G(a → X(at_most(n-1)))``."""
+    f: Formula = G(Not(_called(action)))
+    for _ in range(n):
+        f = G(Implies(_called(action), X(f)))
+    return f
+
+
+def _per_value(ir: ConstraintIR, relation: str, per: Any, desc: str) -> tuple[Formula, str]:
+    """Wrap the relation in :class:`ForEach`: ``per`` names the argument
+    that carries the value, one field for every tool (``"post_id"``) or a
+    field per tool (``{"comment": "post_id", "like": "id"}``).
+
+    - ``precedes`` + per: subject on a value before object on that value;
+    - ``follows`` + per: every value the subject touches, the object touches later;
+    - ``limits`` / ``idempotent`` + per: at most N (1) calls per value."""
+    if relation not in PER_VALUE_RELATIONS:
+        raise ValueError(
+            f"'per' is not supported for '{relation}' (only {sorted(PER_VALUE_RELATIONS)})"
+        )
+    tools = [ir.subject] + ([ir.object] if ir.object else [])
+    if isinstance(per, str):
+        fields = {t: per for t in tools}
+    elif isinstance(per, dict):
+        fields = {t: per.get(t) or per.get(_physical_tool(t)) for t in tools}
+    else:
+        raise ValueError(f"'per' must be a field name or a tool -> field map, got {per!r}")
+    missing = [t for t, f in fields.items() if not f]
+    if missing:
+        raise ValueError(f"'per' names no field for {missing}")
+    binding = tuple((_physical_tool(t), f) for t, f in fields.items())
+    if relation in ("limits", "idempotent"):
+        n = 1 if relation == "idempotent" else int(ir.quantifier or 0)
+        if not 0 <= n <= 10:
+            raise ValueError(f"per-value limit must be between 0 and 10, got {n}")
+        body = _at_most(ir.subject, n)
+    else:
+        body, _, _ = _SYNTH_TABLE[relation]["fn"](ir)
+    shown = per if isinstance(per, str) else ", ".join(f"{t}.{f}" for t, f in per.items())
+    return ForEach(binding, body), f"{desc}, per {shown}"
 
 
 def _compile_guard(guard_text: str, ir: ConstraintIR) -> Any | None:

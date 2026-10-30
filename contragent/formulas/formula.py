@@ -236,6 +236,47 @@ class U(FormulaMixin):
         return f"({self.left} U {self.right})"
 
 
+@dataclass(frozen=True)
+class ForEach(FormulaMixin):
+    """Per value — ``child`` holds separately for every value of an argument.
+
+    ``binding`` pairs each tool with the argument that carries the value:
+    ``(("venmo__like_transaction", "transaction_id"),
+    ("venmo__create_transaction_comment", "transaction_id"))``. The trace is
+    sliced by that value (parametric trace slicing, Chen & Rosu, TACAS
+    2009): the slice for value ``v`` holds the calls of a bound tool whose
+    argument equals ``v``, and ``child`` is judged on each slice on its own.
+    Calls of other tools belong to no slice, so ``child`` speaks only of the
+    bound tools. ``ForEach`` is top-level: it is not nested in another
+    operator (:func:`contragent.formulas.dfa_evaluator.make_evaluator`)."""
+
+    binding: tuple[tuple[str, str], ...]
+    child: Formula
+
+    def __repr__(self) -> str:
+        pairs = ", ".join(f"{t!r}, {f!r}" for t, f in self.binding)
+        return f"ForEach({pairs}, {self.child})"
+
+    def slice_of(self, valuation: dict[str, object]) -> str | None:
+        """The value this event belongs to, or None (no bound tool called,
+        or the argument is absent). Values compare as strings, so an id
+        passed as ``7`` and as ``"7"`` is one slice."""
+        for tool, field in self.binding:
+            if valuation.get(pred_key("called", tool)):
+                v = valuation.get(pred_key("arg_value", tool, field))
+                if v is not None:
+                    return str(v)
+        return None
+
+    def slices(self, trace: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+        out: dict[str, list[dict[str, object]]] = {}
+        for valuation in trace:
+            key = self.slice_of(valuation)
+            if key is not None:
+                out.setdefault(key, []).append(valuation)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Arithmetic / Set nodes (SMT family) + Term abstraction
 # ---------------------------------------------------------------------------
@@ -570,7 +611,9 @@ class Subset(FormulaMixin):
 # Union type
 # ---------------------------------------------------------------------------
 
-Formula = Atom | Not | And | Or | Implies | G | F | X | U | Le | Lt | Ge | Gt | Eq | Subset
+Formula = (
+    Atom | Not | And | Or | Implies | G | F | X | U | ForEach | Le | Lt | Ge | Gt | Eq | Subset
+)
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +636,7 @@ def collect_atoms(formula: Formula) -> set[Atom]:
         return collect_atoms(formula.child)
     elif isinstance(formula, (And, Or, Implies, U)):
         return collect_atoms(formula.left) | collect_atoms(formula.right)
-    elif isinstance(formula, (G, F, X)):
+    elif isinstance(formula, (G, F, X, ForEach)):
         return collect_atoms(formula.child)
     # Arithmetic nodes don't contain Atoms
     return set()

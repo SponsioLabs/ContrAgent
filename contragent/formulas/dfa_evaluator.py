@@ -60,6 +60,7 @@ from contragent.formulas.formula import (
     Const,
     Eq,
     F,
+    ForEach,
     Formula,
     G,
     Ge,
@@ -513,3 +514,83 @@ class DFAEvaluator:
     def __repr__(self) -> str:
         v = self.peek()
         return f"DFAEvaluator(verdict={v!r}, steps={self._steps_consumed})"
+
+
+class ParametricEvaluator:
+    """Monitors a :class:`~contragent.formulas.formula.ForEach`: one
+    :class:`DFAEvaluator` of the body per value, fed only the events of
+    that value (parametric trace slicing). The interface is
+    :class:`DFAEvaluator`'s. Violated as soon as any slice is; at the end of
+    the session, if any slice fails to finish."""
+
+    def __init__(self, formula: ForEach) -> None:
+        self.formula = formula
+        self._slices: dict[str, DFAEvaluator] = {}
+        self._steps_consumed = 0
+        self._bottom = False  # some slice reached ⊥ (it stays there)
+
+    def step(self, valuation: dict[str, object]) -> Verdict3:
+        self._steps_consumed += 1
+        key = self.formula.slice_of(valuation)
+        if key is not None:
+            dfa = self._slices.get(key)
+            if dfa is None:
+                dfa = self._slices[key] = DFAEvaluator(self.formula.child)
+            if dfa.step(valuation) == "⊥":
+                self._bottom = True
+        return self.peek()
+
+    def peek(self) -> Verdict3:
+        # Never ⊤: a value not seen yet starts a fresh slice.
+        return "⊥" if self._bottom else "?"
+
+    def finalize(self) -> Verdict3:
+        if self._bottom:
+            return "⊥"
+        return "⊥" if any(d.finalize() == "⊥" for d in self._slices.values()) else "⊤"
+
+    def snapshot(self) -> tuple:
+        return (
+            {k: d.snapshot() for k, d in self._slices.items()},
+            self._steps_consumed,
+            self._bottom,
+        )
+
+    def restore(self, snap: tuple) -> None:
+        slices, self._steps_consumed, self._bottom = snap
+        self._slices = {}
+        for k, s in slices.items():
+            d = DFAEvaluator(self.formula.child)
+            d.restore(s)
+            self._slices[k] = d
+
+    def reset(self) -> None:
+        self._slices = {}
+        self._steps_consumed = 0
+        self._bottom = False
+
+    @property
+    def residual(self) -> Residual:
+        """The slices' residuals, conjoined (sorted by value), or ``True``
+        before any value is seen. Joint-satisfiability queries over it read
+        all slices on one trace: an approximation."""
+        parts = [self._slices[k].residual for k in sorted(self._slices)]
+        out: Residual = True
+        for p in parts:
+            out = p if out is True else And(out, p)
+        return out
+
+    @property
+    def steps_consumed(self) -> int:
+        return self._steps_consumed
+
+    def __repr__(self) -> str:
+        return f"ParametricEvaluator(slices={len(self._slices)}, verdict={self.peek()!r})"
+
+
+def make_evaluator(formula: Formula) -> DFAEvaluator | ParametricEvaluator:
+    """The monitor for ``formula``: a :class:`ParametricEvaluator` for a
+    per-value rule, a :class:`DFAEvaluator` otherwise."""
+    if isinstance(formula, ForEach):
+        return ParametricEvaluator(formula)
+    return DFAEvaluator(formula)
