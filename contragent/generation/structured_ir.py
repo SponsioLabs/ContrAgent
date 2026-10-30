@@ -263,8 +263,13 @@ def _synth_precedes(ir: ConstraintIR) -> tuple[Formula, str, str]:
 
 
 def _synth_follows(ir: ConstraintIR) -> tuple[Formula, str, str]:
-    """G(called(A) → F(called(B)))"""
+    """G(called(A) → F(called(B))); with ``params["by"]`` naming a tool C,
+    B comes before C: G(called(A) → (¬called(C) U called(B)))."""
     A, B = ir.subject, ir.object
+    by = (ir.params or {}).get("by")
+    if by:
+        f = G(Implies(_called(A), U(Not(_called(by)), _called(B))))
+        return f, f"{A} must be followed by {B} before {by}", "always_followed_by"
     f = G(Implies(_called(A), F(_called(B))))
     return f, f"{A} must always be followed by {B}", "always_followed_by"
 
@@ -842,7 +847,10 @@ def _per_value(ir: ConstraintIR, relation: str, per: Any, desc: str) -> tuple[Fo
 
     - ``precedes`` + per: subject on a value before object on that value;
     - ``follows`` + per: every value the subject touches, the object touches later;
-    - ``limits`` / ``idempotent`` + per: at most N (1) calls per value."""
+    - ``limits`` / ``idempotent`` + per: at most N (1) calls per value.
+
+    A tool family: subject and object may be patterns (``"*__login"``) with
+    per ``"@app"``, one slice per app (log out of every app logged into)."""
     if relation not in PER_VALUE_RELATIONS:
         raise ValueError(
             f"'per' is not supported for '{relation}' (only {sorted(PER_VALUE_RELATIONS)})"

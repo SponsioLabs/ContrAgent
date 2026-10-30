@@ -21,6 +21,7 @@ All nodes are frozen dataclasses (immutable, hashable).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from typing import Literal
 
 from contragent.formulas._pred_key import pred_key
@@ -246,9 +247,17 @@ class ForEach(FormulaMixin):
     sliced by that value (parametric trace slicing, Chen & Rosu, TACAS
     2009): the slice for value ``v`` holds the calls of a bound tool whose
     argument equals ``v``, and ``child`` is judged on each slice on its own.
-    Calls of other tools belong to no slice, so ``child`` speaks only of the
-    bound tools. ``ForEach`` is top-level: it is not nested in another
-    operator (:func:`contragent.formulas.dfa_evaluator.make_evaluator`)."""
+    ``ForEach`` is top-level: it is not nested in another operator
+    (:func:`contragent.formulas.dfa_evaluator.make_evaluator`).
+
+    A tool family: a bound tool may be a pattern (``"*__login"``) and the
+    field ``"@app"``, the value then being the app of the tool called
+    (``spotify__login`` -> ``spotify``); ``child`` names the pattern
+    (``called("*__login")``). A call of a tool ``child`` names but no
+    binding covers (``complete_task``) carries no value: it goes to every
+    slice, and a slice opened later starts after the ones before it, as
+    an event with the empty binding does in Chen & Rosu's algorithm. Calls
+    of other tools belong to no slice."""
 
     binding: tuple[tuple[str, str], ...]
     child: Formula
@@ -257,24 +266,81 @@ class ForEach(FormulaMixin):
         pairs = ", ".join(f"{t!r}, {f!r}" for t, f in self.binding)
         return f"ForEach({pairs}, {self.child})"
 
-    def slice_of(self, valuation: dict[str, object]) -> str | None:
-        """The value this event belongs to, or None (no bound tool called,
-        or the argument is absent). Values compare as strings, so an id
-        passed as ``7`` and as ``"7"`` is one slice."""
+    def route(self, valuation: dict[str, object]) -> tuple[str | None, dict[str, object]]:
+        """The value this event belongs to (None if none) and the event as
+        the slice reads it: a call matched by a pattern also sets
+        ``called(<pattern>)``. Values compare as strings, so an id passed as
+        ``7`` and as ``"7"`` is one slice."""
+        called = _called_tools(valuation)
         for tool, field in self.binding:
-            if valuation.get(pred_key("called", tool)):
+            if "*" in tool:
+                hit = next((t for t in called if fnmatchcase(t, tool)), None)
+                if hit is None:
+                    continue
+                v = (
+                    hit.split("__", 1)[0]
+                    if field == "@app"
+                    else valuation.get(pred_key("arg_value", hit, field))
+                )
+                if v is not None:
+                    out = dict(valuation)
+                    for t, _ in self.binding:
+                        if "*" in t and fnmatchcase(hit, t):
+                            out[pred_key("called", t)] = True
+                    return str(v), out
+            elif valuation.get(pred_key("called", tool)):
                 v = valuation.get(pred_key("arg_value", tool, field))
                 if v is not None:
-                    return str(v)
-        return None
+                    return str(v), valuation
+        return None, valuation
+
+    def slice_of(self, valuation: dict[str, object]) -> str | None:
+        return self.route(valuation)[0]
+
+    def broadcast(self, valuation: dict[str, object]) -> bool:
+        """A call of a tool ``child`` names that no binding covers."""
+        return bool(_called_tools(valuation) & _free_tools(self))
 
     def slices(self, trace: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
         out: dict[str, list[dict[str, object]]] = {}
+        shared: list[dict[str, object]] = []  # events that carry no value
         for valuation in trace:
-            key = self.slice_of(valuation)
+            key, seen = self.route(valuation)
             if key is not None:
-                out.setdefault(key, []).append(valuation)
+                out.setdefault(key, list(shared)).append(seen)
+            elif self.broadcast(valuation):
+                shared.append(valuation)
+                for part in out.values():
+                    part.append(valuation)
         return out
+
+
+def _called_tools(valuation: dict[str, object]) -> set[str]:
+    return {
+        k[len("called(") : -1]
+        for k, v in valuation.items()
+        if v is True and k.startswith("called(") and k.endswith(")")
+    }
+
+
+def _free_tools(f: ForEach) -> frozenset[str]:
+    """Tools ``f.child`` calls that no binding covers (no pattern either)."""
+    cached = _FREE.get(f)
+    if cached is None:
+        bound = [t for t, _ in f.binding]
+        cached = frozenset(
+            a.args[0]
+            for a in collect_atoms(f.child)
+            if a.predicate == "called"
+            and a.args
+            and "*" not in a.args[0]
+            and not any(a.args[0] == t or ("*" in t and fnmatchcase(a.args[0], t)) for t in bound)
+        )
+        _FREE[f] = cached
+    return cached
+
+
+_FREE: dict[ForEach, frozenset[str]] = {}
 
 
 # ---------------------------------------------------------------------------

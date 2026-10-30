@@ -526,18 +526,26 @@ class ParametricEvaluator:
     def __init__(self, formula: ForEach) -> None:
         self.formula = formula
         self._slices: dict[str, DFAEvaluator] = {}
+        # The body on the events that carry no value: where a new slice starts.
+        self._base = DFAEvaluator(formula.child)
         self._steps_consumed = 0
         self._bottom = False  # some slice reached ⊥ (it stays there)
 
     def step(self, valuation: dict[str, object]) -> Verdict3:
         self._steps_consumed += 1
-        key = self.formula.slice_of(valuation)
+        key, seen = self.formula.route(valuation)
         if key is not None:
             dfa = self._slices.get(key)
             if dfa is None:
                 dfa = self._slices[key] = DFAEvaluator(self.formula.child)
-            if dfa.step(valuation) == "⊥":
+                dfa.restore(self._base.snapshot())
+            if dfa.step(seen) == "⊥":
                 self._bottom = True
+        elif self.formula.broadcast(valuation):
+            self._base.step(valuation)
+            for dfa in self._slices.values():
+                if dfa.step(valuation) == "⊥":
+                    self._bottom = True
         return self.peek()
 
     def peek(self) -> Verdict3:
@@ -554,18 +562,22 @@ class ParametricEvaluator:
             {k: d.snapshot() for k, d in self._slices.items()},
             self._steps_consumed,
             self._bottom,
+            self._base.snapshot(),
         )
 
     def restore(self, snap: tuple) -> None:
-        slices, self._steps_consumed, self._bottom = snap
+        slices, self._steps_consumed, self._bottom, base = snap
         self._slices = {}
         for k, s in slices.items():
             d = DFAEvaluator(self.formula.child)
             d.restore(s)
             self._slices[k] = d
+        self._base = DFAEvaluator(self.formula.child)
+        self._base.restore(base)
 
     def reset(self) -> None:
         self._slices = {}
+        self._base = DFAEvaluator(self.formula.child)
         self._steps_consumed = 0
         self._bottom = False
 

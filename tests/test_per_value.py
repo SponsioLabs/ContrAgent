@@ -110,3 +110,61 @@ def test_per_field_by_tool_and_unsupported_relations():
         )
     )
     assert "names no field" in missing.error
+
+
+DONE = "supervisor__complete_task"
+
+
+def logout_rule():
+    res = compile_ir(
+        ConstraintIR(
+            subject="*__login",
+            object="*__logout",
+            relation="follows",
+            scope="global",
+            params={"per": "@app", "by": DONE},
+        )
+    )
+    assert not res.error, res.error
+    return res.compiled.formula
+
+
+def test_log_out_of_every_app_logged_into_before_completing():
+    # A tool family: one slice per app; complete_task, which no binding
+    # covers, reaches every slice.
+    f = logout_rule()
+    assert isinstance(f, ForEach) and f.binding == (("*__login", "@app"), ("*__logout", "@app"))
+    ok = [
+        call("spotify__login"),
+        call("venmo__login"),
+        call("venmo__logout"),
+        call("spotify__logout"),
+        call(DONE),
+    ]
+    left_open = [call("spotify__login"), call("venmo__login"), call("venmo__logout"), call(DONE)]
+    assert evaluate(f, ok) and evaluate_final(f, ok)
+    assert not evaluate_final(f, left_open)
+
+    m = make_evaluator(f)
+    for v in left_open[:-1]:
+        assert m.step(v) == "?"
+    snap = m.snapshot()
+    assert m.step(left_open[-1]) == "⊥"  # completing with spotify open
+    m.restore(snap)
+    m.step(call("spotify__logout"))
+    assert m.step(call(DONE)) == "?" and m.finalize() == "⊤"
+
+
+def test_a_slice_opened_late_starts_after_the_shared_events():
+    # complete_task, then a login in a later request: the late slice saw the
+    # first completion, so it is not judged as if completion came after it.
+    f = logout_rule()
+    trace = [call(DONE), call("gmail__login"), call("gmail__logout"), call(DONE)]
+    assert evaluate_final(f, trace)
+    m = make_evaluator(f)
+    for v in trace:
+        m.step(v)
+    assert m.finalize() == "⊤"
+    # Unrelated calls belong to no slice.
+    assert f.route(call("spotify__show_song", song_id=1))[0] is None
+    assert parse_repr(repr(f)) == f
