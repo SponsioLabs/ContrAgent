@@ -4,7 +4,7 @@ title: "ContrAgent: symbolic temporal supervision of LLM agents using contracts"
 type: software
 version: 1.0.0
 license: Apache-2.0
-repository-code: "https://github.com/yfxiao16/ContrAgent"
+repository-code: "https://github.com/SponsioLabs/ContrAgent"
 authors:
   - family-names: Xiao
     given-names: Yifeng
