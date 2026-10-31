@@ -127,5 +127,5 @@ escalate, suppress) and offline replay, the conflict check with minimal
 unsatisfiable cores, contract formulation from natural language, and the
 SOPBench, AgentDojo, R-Judge, and tau²-bench harnesses.
 
-[Unreleased]: https://github.com/yfxiao16/ContrAgent/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/yfxiao16/ContrAgent/releases/tag/v1.0.0
+[Unreleased]: https://github.com/SponsioLabs/ContrAgent/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/SponsioLabs/ContrAgent/releases/tag/v1.0.0
