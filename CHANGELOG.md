@@ -74,6 +74,10 @@ project uses [semantic versioning](https://semver.org/).
   `make_contracts`, `render_last_turn`, `register_callback`, ...).
 
 ### Added
+- A `NOTICE` file, shipped in the sdist and the wheel, that keeps the
+  copyright notice of Sponsio (Copyright 2026 Sponsio Contributors,
+  Apache-2.0), from which part of ContrAgent is derived, as section 4
+  of the Apache License asks of a redistributed derivative.
 - A saved trace records its library by content: `library_fingerprint`
   (a digest per contract and one for the library), `library_snapshot`
   (the formulas, read back with `parse_repr`), and the ContrAgent
