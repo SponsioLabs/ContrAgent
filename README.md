@@ -2,11 +2,11 @@
 
 **Symbolic temporal supervision of LLM agents using assume-guarantee contracts.**
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/SponsioLabs/ContrAgent/blob/main/LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![arXiv](https://img.shields.io/badge/arXiv-2609.18128-b31b1b.svg)](https://arxiv.org/abs/2609.18128)
 
-![ContrAgent: contracts are compiled once into DFA monitors, which gate tool calls online and replay recorded traces offline](docs/figures/framework.png)
+![ContrAgent: contracts are compiled once into DFA monitors, which gate tool calls online and replay recorded traces offline](https://raw.githubusercontent.com/SponsioLabs/ContrAgent/main/docs/figures/framework.png)
 
 Write rules about what an agent may call, and when. ContrAgent checks
 every tool call against them before it runs, in microseconds, with no
@@ -32,7 +32,7 @@ pip install -e ".[dev]"       # plus pytest, ruff, and z3
 ## Quick start
 
 A contract is a rule over the order, count, and arguments of tool calls.
-Two from [`examples/bank.yaml`](examples/bank.yaml):
+Two from [`examples/bank.yaml`](https://github.com/SponsioLabs/ContrAgent/blob/main/examples/bank.yaml):
 
 ```yaml
 - desc: "identity must be verified before funds move"
@@ -77,20 +77,20 @@ The same library replays a recorded trace:
 contragent replay trace.json --config bank.yaml
 ```
 
-[`examples/`](examples/) has a supervised tool-calling loop and traces to
+[`examples/`](https://github.com/SponsioLabs/ContrAgent/tree/main/examples) has a supervised tool-calling loop and traces to
 replay; nothing there needs a model or credentials.
 
 ## Documentation
 
-- [Authoring a contract library](docs/authoring.md): the four rule
+- [Authoring a contract library](https://github.com/SponsioLabs/ContrAgent/blob/main/docs/authoring.md): the four rule
   shapes, weak versus strong until, which side a predicate belongs on,
   arguments, the checks to run before an agent runs under a library,
   enforcement actions, and the Python form.
-- [Interaction predicates](docs/predicates.md): the vocabulary formulas
+- [Interaction predicates](https://github.com/SponsioLabs/ContrAgent/blob/main/docs/predicates.md): the vocabulary formulas
   are written over, and how each predicate is fed.
-- [Conflict check](docs/conflict-check.md): optional solvers for the
+- [Conflict check](https://github.com/SponsioLabs/ContrAgent/blob/main/docs/conflict-check.md): optional solvers for the
   load-time library check.
-- [CHASE export](docs/chase.md): contract algebra and model checking on
+- [CHASE export](https://github.com/SponsioLabs/ContrAgent/blob/main/docs/chase.md): contract algebra and model checking on
   an exported library.
 
 ## Offline evaluation
@@ -120,8 +120,8 @@ attack success rate.
 | tau²-bench (4,464 traces) | offline evaluation | the strongest model passes 25–60% of tasks by outcome but **0%** without a procedural violation, decided at 0.83 ms per call |
 
 Each number's record, with the command that produced it and the summary
-file behind it, is under [`experiments/`](experiments/). Third-party
-datasets are not redistributed; [`benchmarks/README.md`](benchmarks/README.md)
+file behind it, is under [`experiments/`](https://github.com/SponsioLabs/ContrAgent/tree/main/experiments). Third-party
+datasets are not redistributed; [`benchmarks/README.md`](https://github.com/SponsioLabs/ContrAgent/blob/main/benchmarks/README.md)
 says where to place each one and how to rerun.
 
 ## Citation
@@ -137,7 +137,7 @@ says where to place each one and how to rerun.
 
 ## License
 
-Apache-2.0. Copyright 2026 Yifeng Xiao. See [`LICENSE`](LICENSE) and
-[`NOTICE`](NOTICE); ContrAgent includes code derived from
+Apache-2.0. Copyright 2026 Yifeng Xiao. See [`LICENSE`](https://github.com/SponsioLabs/ContrAgent/blob/main/LICENSE) and
+[`NOTICE`](https://github.com/SponsioLabs/ContrAgent/blob/main/NOTICE); ContrAgent includes code derived from
 [Sponsio](https://github.com/SponsioLabs/Sponsio) (Apache-2.0). See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow.
+[`CONTRIBUTING.md`](https://github.com/SponsioLabs/ContrAgent/blob/main/CONTRIBUTING.md) for the development workflow.

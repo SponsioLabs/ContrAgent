@@ -22,7 +22,7 @@ from contragent.models.system import System
 from contragent.models.trace import Event, Trace
 from contragent.runtime import Block, Escalate, Redirect, Supervisor, TraceVerifier
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "ContrAgent",
