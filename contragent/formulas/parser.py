@@ -42,6 +42,7 @@ from contragent.formulas.formula import (
     CtxValue,
     Eq,
     F,
+    ForEach,
     G,
     Ge,
     Gt,
@@ -590,6 +591,19 @@ def _parse_repr_unary(peek, consume, parse_expr):
         child = parse_expr()
         consume(")")
         return X(child)
+    elif t == "ForEach":
+        # ``ForEach('tool', 'field', ..., body)``: string pairs, then the body.
+        consume("ForEach")
+        consume("(")
+        names = []
+        while peek() is not None and peek()[:1] in ("'", '"'):
+            names.append(_unescape_str_token(consume()))
+            consume(",")
+        child = parse_expr()
+        consume(")")
+        if not names or len(names) % 2:
+            raise ParseError(f"ForEach takes tool/field pairs, got {names}")
+        return ForEach(tuple(zip(names[::2], names[1::2], strict=True)), child)
     elif t == "Var":
         consume("Var")
         consume("(")

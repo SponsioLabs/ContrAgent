@@ -530,12 +530,12 @@ class TraceVerifier:
         keep going") to match the monitor's "skip liveness at runtime"
         behavior.
         """
-        from contragent.formulas.dfa_evaluator import DFAEvaluator
+        from contragent.formulas.dfa_evaluator import make_evaluator
 
         key = node  # frozen dataclass, hashable — stable across GC
         dfa = self._dfas.get(key)
         if dfa is None:
-            dfa = DFAEvaluator(node)
+            dfa = make_evaluator(node)
             self._dfas[key] = dfa
             self._dfa_consumed[key] = 0
 

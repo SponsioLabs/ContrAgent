@@ -82,6 +82,7 @@ from contragent.formulas.formula import (
     Atom,
     Eq,
     F,
+    ForEach,
     Formula,
     G,
     Ge,
@@ -415,6 +416,11 @@ def _abstract(formula: Any, table: _LeafTable, negated: bool = False) -> Node:
     if isinstance(formula, bool):
         return formula != negated
 
+    if isinstance(formula, ForEach):
+        # Satisfiable iff its body is (one value's slice is a trace), so for
+        # satisfiability a per-value rule reads as its body on one value.
+        # Joint queries with other rules are therefore an approximation.
+        return _abstract(formula.child, table, negated)
     if isinstance(formula, (Atom, Subset, Le, Lt, Ge, Gt, Eq)):
         return table.lit_for(formula, negated)
 

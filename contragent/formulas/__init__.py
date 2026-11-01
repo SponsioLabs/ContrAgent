@@ -6,6 +6,7 @@ from contragent.formulas.formula import (
     Const,
     Eq,
     F,
+    ForEach,
     # Base
     Formula,
     FormulaMixin,
@@ -34,6 +35,7 @@ __all__ = [
     "F",
     "X",
     "U",
+    "ForEach",
     "Atom",
     "Not",
     "And",
