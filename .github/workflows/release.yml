@@ -1,0 +1,144 @@
+name: release
+
+# Builds the sdist and the wheel of contragent and publishes them.
+# - Tag v*: the files are built once and uploaded to TestPyPI. Once they
+#   are checked (pip install from TestPyPI), the same files are published to
+#   PyPI by a manual run with publish_run set to the number of that run:
+#     gh workflow run release.yml -f publish_run=<run id>
+# - Manual run without publish_run: a rehearsal, uploaded to TestPyPI with
+#   the version X.Y.Z.devN (N is the number of the run), so that each run can
+#   be uploaded.
+# - Manual run with publish_run and index testpypi: publishes the files of
+#   that run to TestPyPI again (the files already there are skipped), which
+#   tests this path without a release.
+# Both indexes use trusted publishing: the PyPI (and TestPyPI) project must
+# list this repository, this workflow (release.yml), and the environment
+# (pypi, testpypi).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_run:
+        description: "Publish the files of this run (its number) instead of building"
+        required: false
+        default: ""
+      index:
+        description: "Where publish_run publishes the files"
+        type: choice
+        options: [pypi, testpypi]
+        default: pypi
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: inputs.publish_run == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check that the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+          test "${GITHUB_REF_NAME#v}" = "$version"
+          grep -q "__version__ = \"$version\"" contragent/__init__.py
+      - name: Use a development version on TestPyPI
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python3 - "pyproject.toml contragent/__init__.py" "${{ github.run_number }}" <<'PY'
+          import re, sys
+          files, run = sys.argv[1].split(), sys.argv[2]
+          for f in files:
+              s = open(f).read()
+              s = re.sub(r'^(version|__version__) = "([^"]+)"', rf'\1 = "\2.dev{run}"', s, flags=re.M)
+              open(f, "w").write(s)
+          PY
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      # The wheel installs, imports, and runs its entry point, and the
+      # NOTICE ships with it.
+      - name: Install the wheel
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.whl
+          /tmp/check/bin/contragent --version
+          unzip -l dist/*.whl | grep -q 'licenses/NOTICE'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # The tag and the rehearsals: the files go to TestPyPI.
+  testpypi:
+    if: inputs.publish_run == ''
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  # The files of an earlier run, already checked from TestPyPI.
+  publish:
+    if: inputs.publish_run != ''
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.index }}
+    permissions:
+      id-token: write
+      actions: read
+    steps:
+      - name: Check the run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.publish_run }}
+        run: |
+          gh api repos/${{ github.repository }}/actions/runs/$RUN \
+            --jq '"\(.event) \(.head_branch) \(.conclusion) \(.path)"' > run.txt
+          cat run.txt
+          read event ref conclusion path < run.txt
+          test "$conclusion" = success
+          test "$path" = .github/workflows/release.yml
+          if [ "${{ inputs.index }}" = pypi ]; then
+            # PyPI takes only the files built for a tag.
+            test "$event" = push
+            case "$ref" in v[0-9]*) ;; *) echo "not a tag: $ref"; exit 1 ;; esac
+            echo "VERSION=${ref#v}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+          run-id: ${{ inputs.publish_run }}
+          github-token: ${{ github.token }}
+      - name: Check the files
+        run: |
+          ls dist
+          test -n "$(ls dist/*.whl)" && test -n "$(ls dist/*.tar.gz)"
+          if [ -n "$VERSION" ]; then
+            for f in dist/*; do
+              case "$(basename $f)" in contragent-$VERSION-*.whl|contragent-$VERSION.tar.gz) ;;
+                *) echo "$f does not have the version $VERSION"; exit 1 ;; esac
+            done
+          fi
+      - if: inputs.index == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+      - if: inputs.index == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

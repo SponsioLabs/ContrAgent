@@ -6,6 +6,8 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-01
+
 ### Changed
 - License changed from BSD-3-Clause to Apache-2.0.
 - A refusal now reports the contract's `desc` ("identity must be
@@ -131,5 +133,6 @@ escalate, suppress) and offline replay, the conflict check with minimal
 unsatisfiable cores, contract formulation from natural language, and the
 SOPBench, AgentDojo, R-Judge, and tau²-bench harnesses.
 
-[Unreleased]: https://github.com/SponsioLabs/ContrAgent/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/SponsioLabs/ContrAgent/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/SponsioLabs/ContrAgent/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/SponsioLabs/ContrAgent/releases/tag/v1.0.0

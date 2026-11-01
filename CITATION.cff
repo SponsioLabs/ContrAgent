@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use ContrAgent, please cite the paper below."
 title: "ContrAgent: symbolic temporal supervision of LLM agents using contracts"
 type: software
-version: 1.0.0
+version: 1.1.0
 license: Apache-2.0
 repository-code: "https://github.com/SponsioLabs/ContrAgent"
 authors:
