@@ -137,5 +137,7 @@ says where to place each one and how to rerun.
 
 ## License
 
-Apache-2.0. Copyright 2026 Yifeng Xiao. See [`LICENSE`](LICENSE),
+Apache-2.0. Copyright 2026 Yifeng Xiao. See [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE); ContrAgent includes code derived from
+[Sponsio](https://github.com/SponsioLabs/Sponsio) (Apache-2.0). See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow.
