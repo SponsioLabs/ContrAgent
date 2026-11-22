@@ -6,6 +6,18 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `contragent.kernel`: the names a runtime that drives its own agent
+  loop builds on, in one module whose names stay stable within a major
+  version: grounding (`GroundingState`, `ground_event`,
+  `collect_content_atoms`, `pred_key`, `idle_valuation`), monitors
+  (`make_evaluator`, `DFAEvaluator`, `ParametricEvaluator`,
+  `Progressor`), queries (`is_satisfiable`, `completable`), formula
+  analysis (`agent_controlled_atoms`, `demands_eventuality`) and
+  contract files (`resolve_entry`, `ParseError`). They are re-exports;
+  the modules they come from are unchanged and may be reorganized in a
+  minor release.
+
 ## [1.1.0] - 2026-11-01
 
 ### Changed

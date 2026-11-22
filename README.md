@@ -92,6 +92,11 @@ replay; nothing there needs a model or credentials.
   load-time library check.
 - [CHASE export](https://github.com/SponsioLabs/ContrAgent/blob/main/docs/chase.md): contract algebra and model checking on
   an exported library.
+- `contragent.kernel`: the interface for a runtime that drives its own
+  agent loop instead of being supervised: grounding one event,
+  stepping a contract's monitor and reading its residual, asking whether
+  the residuals can still all be satisfied. Its names are stable within
+  a major version (see the module's docstring).
 
 ## Offline evaluation
 
