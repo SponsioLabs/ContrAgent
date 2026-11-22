@@ -6,6 +6,20 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-22
+
+### Added
+- `contragent.kernel`: the names a runtime that drives its own agent
+  loop builds on, in one module whose names stay stable within a major
+  version: grounding (`GroundingState`, `ground_event`,
+  `collect_content_atoms`, `pred_key`, `idle_valuation`), monitors
+  (`make_evaluator`, `DFAEvaluator`, `ParametricEvaluator`,
+  `Progressor`), queries (`is_satisfiable`, `completable`), formula
+  analysis (`agent_controlled_atoms`, `demands_eventuality`) and
+  contract files (`resolve_entry`, `ParseError`). They are re-exports;
+  the modules they come from are unchanged and may be reorganized in a
+  minor release.
+
 ## [1.1.0] - 2026-11-01
 
 ### Changed
@@ -133,6 +147,7 @@ escalate, suppress) and offline replay, the conflict check with minimal
 unsatisfiable cores, contract formulation from natural language, and the
 SOPBench, AgentDojo, R-Judge, and tau²-bench harnesses.
 
-[Unreleased]: https://github.com/SponsioLabs/ContrAgent/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/SponsioLabs/ContrAgent/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/SponsioLabs/ContrAgent/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/SponsioLabs/ContrAgent/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/SponsioLabs/ContrAgent/releases/tag/v1.0.0
