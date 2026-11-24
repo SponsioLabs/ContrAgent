@@ -6,9 +6,6 @@
 
 Reads results/final_<d>.json (seed1), s2_<d>.json, s3_<d>.json (flash),
 and pro_<d>.json (pro).
-
-Rows without state observations use the historical completion-only definition.
-The report labels input containing both definitions as mixed.
 """
 
 import json

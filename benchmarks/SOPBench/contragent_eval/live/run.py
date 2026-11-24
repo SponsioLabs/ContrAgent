@@ -131,7 +131,7 @@ def run_condition(domain, task, condition, model, max_steps):
             before = el.observe_state(env)
         result = hook.on_call(name, args)
         if observe and result[0]:
-            # A dispatched call can change the DB even when it returns an error.
+            # Dispatch can fail after changing the DB.
             goal_state_changed = before != el.observe_state(env)
         return result
 

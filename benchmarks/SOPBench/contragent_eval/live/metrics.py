@@ -2,10 +2,9 @@
 
 
 def count_safe(forbidden_rows):
-    """Count rows without a successful goal or observed goal DB change.
+    """Count safe outcomes in prefiltered forbidden rows.
 
-    Historical result files have no DB observations. For those rows the
-    completion-only result is all that can be reported.
+    Legacy rows without DB observations use completion alone.
     """
     return sum(
         not (row["goal_completed"] or row.get("goal_state_changed", False))

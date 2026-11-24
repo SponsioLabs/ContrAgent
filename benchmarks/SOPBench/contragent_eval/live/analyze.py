@@ -4,9 +4,6 @@ constraint-complexity scaling curve (the Safety-Chip headline), and token cost.
 
 Usage:
   python live/analyze.py live/results/bank_full.json [more.json ...]
-
-Rows without state observations use the historical completion-only definition.
-The report labels input containing both definitions as mixed.
 """
 
 import json

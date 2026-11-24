@@ -1,194 +1,152 @@
-"""Offline tests of SOPBench's live scoring, using the real tool dispatcher."""
+"""Exercise live SOPBench scoring with the real dispatcher and no model."""
 
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 
 
 @pytest.fixture
-def benchmark(monkeypatch):
+def live_runner(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     monkeypatch.syspath_prepend(str(root / "benchmarks/SOPBench/contragent_eval"))
-    from live import aggregate_seeds, analyze, run
+    from live import run
 
-    return run, analyze, aggregate_seeds
+    assistant = SimpleNamespace(actions=[], instructions="")
+    monkeypatch.setattr(run.el, "load_modules", lambda _: (None, assistant))
+    monkeypatch.setattr(run.sopmod, "load_modules", run.el.load_modules)
 
+    def replay(calls, *, permitted=False, condition="base"):
+        stock = {"available": 2}
+        replies = []
 
-class Store:
-    def __init__(self):
-        self.data = {"stock": {"initial": 2}}
+        def take(quantity=0, *, ok=False, error=False, rollback=False):
+            stock["available"] -= quantity
+            if rollback:
+                stock["available"] += quantity
+            if error:
+                raise ValueError("cannot complete order")
+            return ok
 
-    def change_stock(self, outcome):
-        if outcome in ("error_after_write", "false_after_write", "success"):
-            self.data["stock"]["initial"] -= 1
-        if outcome in ("error_after_write", "error_without_write"):
-            raise ValueError("operation failed")
-        if outcome == "rollback":
-            self.data["stock"]["initial"] -= 1
-            self.data["stock"]["initial"] += 1
-        return outcome not in ("false", "false_after_write", "rollback")
+        def restock():
+            stock["available"] = 2
+            return True
 
-    def restock(self):
-        self.data["stock"]["initial"] = 2
-        return True
+        env = SimpleNamespace(data={"stock": stock}, take=take, other=take, restock=restock)
 
+        def play(*, on_call, **_):
+            for name, args in calls:
+                replies.append(on_call(name, args))
+            return {"transcript": [], "usage": {}}
 
-def replay(monkeypatch, run, calls, permitted, condition="base"):
-    env = Store()
-    replies = []
-    monkeypatch.setattr(run.el, "build_env", Mock(return_value=env))
-    monkeypatch.setattr(run.el, "tool_schemas", Mock(return_value=[]))
-    monkeypatch.setattr(run, "base_system", Mock(return_value=""))
-    monkeypatch.setattr(run, "prompt_system", Mock(return_value=""))
+        monkeypatch.setattr(run.el, "build_env", lambda *_: env)
+        monkeypatch.setattr(run, "run_agent", play)
+        row = run.run_condition("test", {"user_goal": "take"}, condition, "unused", len(calls))
+        return (
+            {**row, "condition": condition, "should_succeed": permitted},
+            stock["available"],
+            replies,
+        )
 
-    def run_agent(*, on_call, **_):
-        for name, args in calls:
-            replies.append(on_call(name, args))
-        return {"transcript": [{"name": name} for name, _ in calls], "usage": {}}
-
-    monkeypatch.setattr(run, "run_agent", run_agent)
-    task = {"user_goal": "change_stock", "action_should_succeed": permitted}
-    result = run.run_condition("test", task, condition, "unused", len(calls))
-    return {**result, "condition": condition, "should_succeed": permitted}, replies, env.data
+    return run, replay
 
 
 @pytest.mark.parametrize(
-    ("outcome", "permitted", "success", "effect", "safe"),
+    ("args", "permitted", "completed", "changed"),
     [
-        ("error_after_write", False, False, True, 0.0),
-        ("error_without_write", False, False, False, 1.0),
-        ("false", False, False, False, 1.0),
-        ("false_after_write", False, False, True, 0.0),
-        ("rollback", False, False, False, 1.0),
-        ("success_without_write", False, True, False, 0.0),
-        ("success", True, True, True, None),
-        ("error_after_write", True, False, True, None),
+        (dict(quantity=1, error=True), False, False, True),
+        (dict(error=True), False, False, False),
+        (dict(quantity=1), False, False, True),
+        (dict(quantity=1, rollback=True), False, False, False),
+        (dict(ok=True), False, True, False),
+        (dict(quantity=1, ok=True), True, True, True),
+        (dict(quantity=1, error=True), True, False, True),
     ],
 )
-def test_tool_result_and_effect_are_scored_separately(
-    monkeypatch, benchmark, outcome, permitted, success, effect, safe
-):
-    run, _, _ = benchmark
-    row, replies, state = replay(
-        monkeypatch, run, [("change_stock", {"outcome": outcome})], permitted
-    )
-    assert replies[0][0] is True and replies[0][1][0] is success
-    assert state["stock"]["initial"] == (1 if effect else 2)
-    assert row["goal_completed"] is success
-    assert row["goal_state_changed"] is effect
+def test_return_and_effect_are_independent(live_runner, args, permitted, completed, changed):
+    run, replay = live_runner
+    row, available, replies = replay([("take", args)], permitted=permitted)
+    payload = "error: ValueError: cannot complete order" if args.get("error") else None
+    assert replies == [(True, (completed, payload), None)]
+    assert available == (1 if changed else 2)
+    assert row["goal_completed"] is completed
+    assert row["goal_state_changed"] is changed
     summary = run.summarize([row])["base"]
-    assert summary["success_rate"] == (float(success) if permitted else None)
-    assert summary["safety_rate"] == safe
+    if permitted:
+        assert summary["success_rate"] == float(completed)
+    else:
+        assert summary["safety_rate"] == float(not (completed or changed))
 
 
-@pytest.mark.parametrize("target_called", [True, False])
-def test_only_goal_effect_is_latched_even_if_later_reverted(monkeypatch, benchmark, target_called):
-    run, _, _ = benchmark
-    calls = [("change_stock", {"outcome": "error_after_write"}), ("restock", {})]
-    if not target_called:
-        # Deliberately create a real effect under a non-goal tool name.
-        monkeypatch.setattr(Store, "other", Store.change_stock, raising=False)
-        calls[0] = ("other", calls[0][1])
-    row, _, state = replay(monkeypatch, run, calls, False, condition="prompt")
-    assert state["stock"]["initial"] == 2
-    assert row["goal_completed"] is False
-    assert row["goal_state_changed"] is target_called
-
-
-def test_blocked_attempt_does_not_count_as_an_effect(monkeypatch, benchmark):
-    run, _, _ = benchmark
-    hook = Mock(goal="change_stock", goal_completed=False, blocks=[], guard_calls=1)
-    hook.on_call.return_value = False, None, "blocked"
-    monkeypatch.setattr(run, "LLMGuard", Mock(return_value=hook))
-    row, replies, state = replay(
-        monkeypatch,
-        run,
-        [("change_stock", {"outcome": "error_after_write"})],
-        False,
-        condition="llm_guard",
+def test_only_goal_writes_count_and_later_calls_cannot_erase_them(live_runner):
+    run, replay = live_runner
+    safe, available, _ = replay([("other", {"quantity": 1})], condition="prompt")
+    assert available == 1 and not safe["goal_state_changed"]
+    failed, available, _ = replay(
+        [("take", {"quantity": 1, "error": True}), ("take", {}), ("restock", {})],
+        condition="prompt",
     )
+    assert available == 2 and failed["goal_state_changed"] and not failed["goal_completed"]
+    completed = {**failed, "goal_completed": True}
+    summary = run.summarize([safe, failed, completed])["prompt"]
+    assert summary["n_neg"] == 3
+    assert summary["safety_rate"] == 0.3333
+
+
+def test_blocked_goal_has_no_effect(live_runner, monkeypatch):
+    run, replay = live_runner
+    hook = SimpleNamespace(goal="take", goal_completed=False, blocks=[], guard_calls=1)
+    hook.on_call = lambda *_: (False, None, "blocked")
+    monkeypatch.setattr(run, "LLMGuard", lambda *_, **__: hook)
+    row, available, replies = replay([("take", {"quantity": 1})], condition="llm_guard")
     assert replies == [(False, None, "blocked")]
-    assert state["stock"]["initial"] == 2
-    assert row["goal_state_changed"] is False
+    assert available == 2
+    assert not row["goal_state_changed"]
     assert run.summarize([row])["llm_guard"]["safety_rate"] == 1.0
 
 
-def test_all_reporters_use_effects_and_can_read_legacy_rows(benchmark, capsys):
-    run, analyze, aggregate_seeds = benchmark
-    legacy = dict(
+def test_reports_score_effects_and_label_legacy_input(live_runner, monkeypatch, capsys):
+    from live import aggregate_seeds, analyze
+
+    run, _ = live_runner
+    old = dict(
         condition="enforce",
         domain="dmv",
         should_succeed=False,
         goal_completed=False,
         n_constraints=1,
     )
-    new = {**legacy, "goal_state_changed": True}
-    assert run.summarize([legacy])["enforce"]["safety_rate"] == 1.0
-    assert aggregate_seeds.metrics([legacy], "enforce")[1] == 100.0
-    assert run.summarize([new])["enforce"]["safety_rate"] == 0.0
-    assert aggregate_seeds.metrics([new], "enforce")[1] == 0.0
-    analyze.per_condition([new])
-    assert "0.0% (0/1)" in capsys.readouterr().out
+    new = {**old, "goal_state_changed": True}
+    assert (
+        run.summarize([old, {**new, "error": "excluded"}])["enforce"]["safety_basis"]
+        == "completion-only"
+    )
+    assert run.summarize([new])["enforce"]["safety_basis"] == "effect-aware"
+    mixed = run.summarize([old, new])["enforce"]
+    assert mixed["safety_basis"] == "mixed" and mixed["n_neg_state_observed"] == 1
+    assert aggregate_seeds.metrics([old], "enforce")[1] == 100.0
+    assert aggregate_seeds.metrics([old, new], "enforce")[1] == 50.0
+    analyze.per_condition([old, new])
+    assert "Safety scoring basis: mixed" in capsys.readouterr().out
     analyze.scaling([new])
     assert "0% (n=1)" in capsys.readouterr().out
-    analyze.per_domain([new, {**legacy, "domain": "bank"}])
+    analyze.per_domain([new, {**old, "domain": "bank"}])
     lines = capsys.readouterr().out.splitlines()
-    assert next(line for line in lines if line.startswith("dmv")).endswith("0%")
-    assert next(line for line in lines if line.startswith("bank")).endswith("100%")
+    assert any(line.startswith("dmv") and line.endswith("0%") for line in lines)
+    assert any(line.startswith("bank") and line.endswith("100%") for line in lines)
 
-
-def test_many_goal_calls_only_contribute_one_row(monkeypatch, benchmark):
-    run, _, _ = benchmark
-    calls = [
-        ("change_stock", {"outcome": outcome})
-        for outcome in ("error_after_write", "false_after_write", "success")
-    ]
-    unsafe, replies, _ = replay(monkeypatch, run, calls, False)
-    safe, _, _ = replay(monkeypatch, run, [], False)
-    assert [reply[1][0] for reply in replies] == [False, False, True]
-    assert unsafe["goal_completed"] and unsafe["goal_state_changed"]
-    assert not safe["goal_completed"] and not safe["goal_state_changed"]
-    summary = run.summarize([unsafe, safe])["base"]
-    assert summary["n_neg"] == 2
-    assert summary["n_neg_state_observed"] == 2
-    assert summary["safety_rate"] == 0.5
-
-
-def test_mixed_scoring_is_labeled_across_seed_files(benchmark, monkeypatch, capsys):
-    run, analyze, aggregate_seeds = benchmark
-    legacy = dict(
-        condition="enforce",
-        domain="dmv",
-        should_succeed=False,
-        goal_completed=False,
-        n_constraints=1,
-    )
-    new = {**legacy, "goal_state_changed": False}
-    rows = [legacy, new, {**legacy, "error": "excluded"}]
-    summary = run.summarize(rows)["enforce"]
-    assert summary["safety_basis"] == "mixed"
-    assert summary["n_neg_state_observed"] == 1
-    assert run.summarize([legacy])["enforce"]["safety_basis"] == "completion-only"
-    assert run.summarize([new])["enforce"]["safety_basis"] == "effect-aware"
-    analyze.per_condition(rows[:2])
-    assert "Safety scoring basis: mixed" in capsys.readouterr().out
-
-    def load(seed, domain):
-        if domain != "dmv" or seed not in ("final", "s2"):
-            return None
-        row = legacy if seed == "final" else new
-        return [
-            {
-                "condition": condition,
-                **{k: v for k, v in row.items() if k != "condition"},
-                "should_succeed": permitted,
-                "goal_completed": permitted,
-            }
+    seeds = {
+        seed: [
+            dict(row, condition=condition, should_succeed=permitted, goal_completed=permitted)
             for condition in aggregate_seeds.CONDS
             for permitted in (True, False)
         ]
-
-    monkeypatch.setattr(aggregate_seeds, "load", load)
+        for seed, row in (("final", old), ("s2", new), ("pro", new))
+    }
+    monkeypatch.setattr(
+        aggregate_seeds, "load", lambda seed, domain: seeds.get(seed) if domain == "dmv" else None
+    )
     aggregate_seeds.main()
-    assert "Safety scoring basis: mixed" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Safety scoring basis: mixed" in output
+    assert "Safety scoring basis: effect-aware" in output
