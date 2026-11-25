@@ -41,6 +41,12 @@ _convert = _load_convert()
 from .env_loader import dispatch, observe_state  # noqa: E402
 
 
+def goal_action(task):
+    """The goal action of a task: its `user_goal`, else the first node of its
+    action graph. Every live hook reads the goal this way."""
+    return _convert._goal_action(task)
+
+
 class LiveEnforcer:
     """Per-(domain, task) enforcement hook for the agent loop."""
 
@@ -48,7 +54,7 @@ class LiveEnforcer:
         self.domain = domain
         self.task = task
         self.env = env
-        self.goal = _convert._goal_action(task) or task.get("user_goal")
+        self.goal = goal_action(task)
 
         # Resolve the domain's contracts once (assumptions + guarantees).
         from contragent.config import load_config
