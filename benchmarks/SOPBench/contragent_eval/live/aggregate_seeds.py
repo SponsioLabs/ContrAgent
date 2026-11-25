@@ -12,6 +12,11 @@ import json
 import math
 import os
 
+if __package__:
+    from .metrics import count_safe, safety_basis
+else:
+    from metrics import count_safe, safety_basis
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 RES = os.path.join(HERE, "results")
 DOMAINS = ["bank", "dmv", "healthcare", "hotel", "library", "online_market", "university"]
@@ -23,7 +28,7 @@ def metrics(results, cond):
     pos = [r for r in rs if r["should_succeed"]]
     neg = [r for r in rs if not r["should_succeed"]]
     s = 100.0 * sum(1 for r in pos if r["goal_completed"]) / len(pos) if pos else None
-    sf = 100.0 * sum(1 for r in neg if not r["goal_completed"]) / len(neg) if neg else None
+    sf = 100.0 * count_safe(neg) / len(neg) if neg else None
     gc = sum(r.get("guard_calls", 0) for r in rs) / len(rs) if rs else 0
     return s, sf, gc
 
@@ -46,7 +51,11 @@ def mean_std(xs):
 def main():
     # ---- (1) flash 3-seed ----
     seeds = ["final", "s2", "s3"]
+    sweep = {(seed, domain): load(seed, domain) for seed in seeds for domain in DOMAINS}
     print("=== FLASH 3-seed: success/safety  mean +/- std (pp) ===")
+    print(
+        f"Safety scoring basis: {safety_basis(row for rows in sweep.values() for row in rows or [])}"
+    )
     print(f"{'domain':13s} | " + " | ".join(f"{c:^20s}" for c in CONDS))
     perseed_pool = {sd: {c: {"s": [], "sf": []} for c in CONDS} for sd in seeds}
     for dom in DOMAINS:
@@ -54,7 +63,7 @@ def main():
         for c in CONDS:
             svals, sfvals = [], []
             for sd in seeds:
-                r = load(sd, dom)
+                r = sweep[sd, dom]
                 if r is None:
                     continue
                 s, sf, _ = metrics(r, c)
@@ -90,13 +99,16 @@ def main():
 
     # ---- (2) pro single-seed ----
     print("\n=== GEMINI-2.5-PRO (single seed, limit 30): success/safety ===")
-    have_pro = any(os.path.isfile(os.path.join(RES, f"pro_{d}.json")) for d in DOMAINS)
-    if not have_pro:
+    pro = {domain: load("pro", domain) for domain in DOMAINS}
+    if all(rows is None for rows in pro.values()):
         print("  (pro results not present yet)")
         return
+    print(
+        f"Safety scoring basis: {safety_basis(row for rows in pro.values() for row in rows or [])}"
+    )
     pro_pool = {c: {"s": [], "sf": [], "gc": []} for c in CONDS}
     for dom in DOMAINS:
-        r = load("pro", dom)
+        r = pro[dom]
         if r is None:
             print(f"{dom:13s} | (missing)")
             continue
