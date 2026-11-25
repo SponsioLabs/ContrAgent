@@ -15,6 +15,12 @@ project uses [semantic versioning](https://semver.org/).
   (`live/metrics.py`) and print the scoring basis. Rows recorded before
   this change carry no state observation and are scored on completion
   alone, so the published SOPBench numbers are unchanged.
+- The live SOPBench hooks read a task's goal action one way
+  (`live.enforce.goal_action`: its `user_goal`, else the first node of
+  its action graph). The base and prompt hook and the LLM guard read
+  `user_goal` only, so on a task without one they tracked no goal while
+  the enforcer tracked the graph's. Every SOPBench release task has a
+  `user_goal`, so no result changes.
 
 ## [1.2.0] - 2026-11-22
 

@@ -22,6 +22,7 @@ import os
 
 from . import sop as sopmod
 from .agent import _post
+from .enforce import goal_action
 from .env_loader import dispatch
 
 _GUARD_SYSTEM = (
@@ -91,7 +92,7 @@ class LLMGuard:
         self.domain = domain
         self.task = task
         self.env = env
-        self.goal = task.get("user_goal")
+        self.goal = goal_action(task)
         self.model = model
         self.api_key = api_key or os.environ["GEMINI_API_KEY"]
 

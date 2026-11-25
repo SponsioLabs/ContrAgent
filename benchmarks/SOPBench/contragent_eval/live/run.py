@@ -35,7 +35,7 @@ for p in (_SOP_ROOT, os.path.dirname(os.path.dirname(_SOP_ROOT))):
 from live import env_loader as el  # noqa: E402
 from live import sop as sopmod  # noqa: E402
 from live.agent import run_agent  # noqa: E402
-from live.enforce import LiveEnforcer  # noqa: E402
+from live.enforce import LiveEnforcer, goal_action  # noqa: E402
 from live.llm_guard import LLMGuard  # noqa: E402
 from live.metrics import count_safe, safety_basis  # noqa: E402
 
@@ -80,7 +80,7 @@ class Passthrough:
 
     def __init__(self, domain, task, env):
         self.env = env
-        self.goal = task.get("user_goal")
+        self.goal = goal_action(task)
         self.goal_completed = False
 
     def on_call(self, name, args):
