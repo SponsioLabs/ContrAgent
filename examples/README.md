@@ -1,11 +1,12 @@
 # Examples
 
-All three run without a model or credentials. To write a library of your own, start with [`docs/authoring.md`](../docs/authoring.md).
+These examples run without a model or credentials. To write a library of your own, start with [`docs/authoring.md`](../docs/authoring.md).
 
 | File | Shows |
 |---|---|
 | [`quickstart.py`](quickstart.py) | The README program: load [`bank.yaml`](bank.yaml), refuse a premature transfer, admit it after verification, report the receipt still owed at session end. |
 | [`agent_loop.py`](agent_loop.py) | The integration shape: your own tool-calling loop with the tools wrapped by `guard.wrap`, refusals fed back to the model, contracts written with the fluent helper. |
+| [`refund_switch.py`](refund_switch.py) | Run `python -m examples.refund_switch` to compare retaining or releasing a pending policy check. The example records the switch between tool calls and prints both proposal decisions using the kernel monitor. |
 | [`traces/`](traces/) | Two recorded traces for the offline role: replay them against [`refund.yaml`](refund.yaml). |
 
 ```bash
