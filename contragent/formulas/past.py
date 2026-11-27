@@ -30,7 +30,9 @@ refused with ``ValueError``.
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 
 from contragent.formulas.formula import (
@@ -46,11 +48,10 @@ from contragent.formulas.formula import (
     O,
     Prev,
     S,
-    Term,
     U,
     X,
     Y,
-    term_children,
+    subnodes,
 )
 
 __all__ = ["PastTracker", "annotate", "has_past", "past_nodes"]
@@ -58,40 +59,32 @@ __all__ = ["PastTracker", "annotate", "has_past", "past_nodes"]
 _FUTURE = (G, F, X, U)
 
 
-def _children(node: Any) -> list:
-    """Formulas and terms directly under a node (formula or term)."""
-    if isinstance(node, Term):
-        return list(term_children(node)) + list(term_formulas_here(node))
-    out: list = []
-    for attr in ("child", "left", "right"):
-        sub = getattr(node, attr, None)
-        if sub is not None and not isinstance(sub, str):
-            out.append(sub)
-    return out
-
-
-def term_formulas_here(t: Any) -> tuple:
-    if isinstance(t, At):
-        return (t.when,)
-    if isinstance(t, CountSince):
-        return (t.count, t.since)
-    return ()
-
-
 def past_nodes(formula: Any) -> tuple:
-    """The past-time nodes of ``formula``, innermost first, each once."""
+    """The past-time nodes of ``formula``, innermost first, each once.
+
+    Raises ``ValueError`` for a future operator or a ``ForEach`` inside a
+    past-time node: neither has a value at the current event.
+    """
+    try:
+        return _past_nodes(formula)
+    except TypeError:  # an unhashable node: walk without the cache
+        return _past_nodes.__wrapped__(formula)
+
+
+@lru_cache(maxsize=4096)
+def _past_nodes(formula: Any) -> tuple:
     seen: dict = {}
 
     def walk(node: Any, inside_past: bool) -> None:
-        if isinstance(node, (bool, str)) or node is None:
-            return
-        if isinstance(node, ForEach):
-            walk(node.child, inside_past)
+        if node is None or isinstance(node, (bool, str)):
             return
         is_past = isinstance(node, PAST_FORMULAS + PAST_TERMS)
-        if inside_past and isinstance(node, _FUTURE):
-            raise ValueError(f"a future operator inside a past-time one has no value yet: {node!r}")
-        for sub in _children(node):
+        if inside_past and isinstance(node, (*_FUTURE, ForEach)):
+            raise ValueError(
+                f"{type(node).__name__} inside a past-time operator has no value "
+                f"at the current event: {node!r}"
+            )
+        for sub in subnodes(node):
             walk(sub, inside_past or is_past)
         if is_past and node not in seen:
             seen[node] = None
@@ -185,33 +178,44 @@ class PastTracker:
         mem, self._first = snap
         self._mem = dict(mem)
 
-    def idle(self, idle_valuation: dict, limit: int = 64) -> dict:
-        """The valuation of the idle events after the end, past values included.
+    def idle_events(self, idle_valuation: dict, limit: int = 64) -> list[dict]:
+        """The idle events after the end, past values included, until they settle.
 
-        The idle event repeats forever, so the past-time values settle after
-        at most as many events as the deepest window; the settled valuation
-        is returned. A count that keeps growing on idle events (a ``count``
-        operand that holds when nothing happens) is read after ``limit``
-        idle events. Does not change the tracker.
+        After the last event nothing happens, so the same idle valuation
+        repeats; its past-time values change for at most as many idle
+        events as the deepest window (``Y(Y(p))``: two) and then stay. The
+        list ends with the first settled event, which repeats forever (see
+        :func:`contragent.formulas.evaluator.holds_idle_events`). A count
+        that grows on every idle event (a ``count`` operand that holds when
+        nothing happens) never settles; it is read up to ``limit`` idle
+        events, so a bound above ``limit`` on it is not reached. Does not
+        change the tracker.
         """
         saved = self.snapshot()
         try:
-            prev = self.step(idle_valuation)
+            events = [self.step(idle_valuation)]
             for _ in range(limit):
-                cur = self.step(idle_valuation)
-                if cur[PAST_KEY] == prev[PAST_KEY]:
-                    return cur
-                prev = cur
-            return prev
+                nxt = self.step(idle_valuation)
+                if nxt[PAST_KEY] == events[-1][PAST_KEY]:
+                    break
+                events.append(nxt)
+            return events
         finally:
             self.restore(saved)
 
 
-# Annotated traces, kept so that evaluating a formula again on the same
-# growing trace (the verifier's recursive backend) annotates only the new
-# events. Keyed by the trace object and the formula's past-time nodes.
+# Annotated traces, so that evaluating a formula again on the same session
+# (the verifier's recursive backend, event by event) annotates only the new
+# events. Past values at an event depend only on the events up to it, so
+# the annotation of a prefix is the prefix of the annotation: an entry
+# serves the trace it was built from, the same trace grown, and any slice
+# of it that starts at its first event. Entries are keyed by the first
+# event object and checked by identity at the boundary, with the contents
+# of the last annotated event compared; an earlier event changed in place
+# is not noticed (the verifier only appends).
 _CACHE: OrderedDict = OrderedDict()
 _CACHE_SIZE = 64
+_LOCK = threading.Lock()
 
 
 def annotate(formula: Any, trace: list[dict]) -> list[dict]:
@@ -219,32 +223,40 @@ def annotate(formula: Any, trace: list[dict]) -> list[dict]:
     nodes = past_nodes(formula)
     if not nodes or not trace:
         return trace
-    key = (id(trace), nodes)
-    hit = _CACHE.get(key)
-    if hit is not None:
-        raw, seen, out, tracker = hit
-        # The same event objects with the same contents: an event changed
-        # in place since (a valuation corrected after the fact) starts over.
-        if len(raw) <= len(trace) and all(
-            a is b and c == b for a, b, c in zip(raw, trace[: len(raw)], seen, strict=True)
-        ):
-            for ev in trace[len(raw) :]:
-                out.append(tracker.step(ev))
-                raw.append(ev)
-                seen.append(dict(ev))
-            _CACHE.move_to_end(key)
-            return list(out)
-    tracker = PastTracker(formula)
-    out = [tracker.step(ev) for ev in trace]
-    _CACHE[key] = (list(trace), [dict(ev) for ev in trace], out, tracker)
-    while len(_CACHE) > _CACHE_SIZE:
-        _CACHE.popitem(last=False)
-    return list(out)
+    key = (id(trace[0]), nodes)
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None:
+            raw, last_seen, out, tracker = hit
+            k = min(len(raw), len(trace))
+            if (
+                raw[0] is trace[0]
+                and raw[k - 1] is trace[k - 1]
+                and (k < len(raw) or last_seen == trace[k - 1])
+            ):
+                if len(trace) <= len(raw):
+                    return out[: len(trace)]
+                for ev in trace[len(raw) :]:
+                    out.append(tracker.step(ev))
+                    raw.append(ev)
+                _CACHE[key] = (raw, dict(raw[-1]), out, tracker)
+                _CACHE.move_to_end(key)
+                return list(out)
+        tracker = PastTracker(formula)
+        out = [tracker.step(ev) for ev in trace]
+        _CACHE[key] = (list(trace), dict(trace[-1]), out, tracker)
+        while len(_CACHE) > _CACHE_SIZE:
+            _CACHE.popitem(last=False)
+        return list(out)
 
 
 def is_annotated(formula: Any, trace: list[dict]) -> bool:
+    """Whether every event of ``trace`` already carries ``formula``'s past-time values."""
     nodes = past_nodes(formula)
     if not nodes or not trace:
         return True
-    memo = trace[0].get(PAST_KEY)
-    return isinstance(memo, dict) and all(n in memo for n in nodes)
+    for ev in (trace[0], trace[-1]):
+        memo = ev.get(PAST_KEY)
+        if not isinstance(memo, dict) or not all(n in memo for n in nodes):
+            return False
+    return True

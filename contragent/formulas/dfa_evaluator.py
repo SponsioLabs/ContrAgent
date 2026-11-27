@@ -53,7 +53,7 @@ from typing import Any, Literal
 
 from contragent.formulas._compare import coerce_ordered
 from contragent.formulas._pred_key import idle_valuation
-from contragent.formulas.evaluator import holds_idle
+from contragent.formulas.evaluator import holds_idle, holds_idle_events
 from contragent.formulas.formula import (
     PAST_FORMULAS,
     PAST_KEY,
@@ -484,9 +484,10 @@ class DFAEvaluator:
         Returns ``"⊤"`` or ``"⊥"``.
         """
         idle = idle_valuation(self._last)
-        if self._past is not None:
-            idle = self._past.idle(idle)
-        return "⊤" if holds_idle(self._residual, idle) else "⊥"
+        if self._past is None:
+            return "⊤" if holds_idle(self._residual, idle) else "⊥"
+        idles = self._past.idle_events(idle)
+        return "⊤" if holds_idle_events(self._residual, idles) else "⊥"
 
     # -----------------------------------------------------------------
     # Snapshot / restore (for dry-run, rollback, session reset)

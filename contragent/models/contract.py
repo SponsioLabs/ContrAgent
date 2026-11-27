@@ -128,7 +128,7 @@ def _formula_is_pure_det(formula: Any) -> bool:
         return _formula_is_pure_det(formula.left) and _formula_is_pure_det(formula.right)
     if isinstance(formula, (G, F, X)):
         return _formula_is_pure_det(formula.child)
-    from contragent.formulas.formula import PAST_FORMULAS, term_formulas
+    from contragent.formulas.formula import PAST_FORMULAS
 
     if isinstance(formula, PAST_FORMULAS):
         parts = [getattr(formula, a) for a in ("child", "left", "right") if hasattr(formula, a)]

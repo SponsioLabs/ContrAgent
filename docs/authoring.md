@@ -179,7 +179,10 @@ comparison with no value is false, as for arguments above.
 ```
 
 Operands of a past-time operator are pointwise or past-time; a future
-operator inside one (`O(F(p))`) is refused. The conflict check treats a
+operator or a `ForEach` inside one (`O(F(p))`) is refused. At the end of
+the session the idle events that follow keep their own past: `Y(p)`
+holds on the first of them when `p` held at the last event, so a pending
+`F(Y(p))` is met there. The conflict check treats a
 past-time formula as a proposition free to take any value, so it reports
 no conflict that the history would not produce, but may miss one that
 only the history rules out.

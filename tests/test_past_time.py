@@ -45,6 +45,7 @@ from contragent.formulas.formula import (
     Lt,
     Not,
     Or,
+    U,
     Var,
     X,
 )
@@ -459,3 +460,112 @@ class TestVerifier:
                 v.sync(self._trace(*tools[:k]))
                 results.append(v.check(f).holds)
             assert results == [True, True, False], backend
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: walks that must see inside the new terms, the end of session
+# ---------------------------------------------------------------------------
+
+
+class TestWalksSeeInsideTerms:
+    def test_numeric_argument_readers_are_found(self):
+        """A call missing an argument a contract reads is refused, in or out of arithmetic."""
+        from tests.test_fail_closed_gate import _guard
+
+        plain = "G((called('refund') -> (Var('arg_numeric', 'refund', 'amount') <= 1000)))"
+        total = (
+            "G((called('refund') -> (Mul(Var('arg_numeric', 'refund', 'count'), "
+            "Var('arg_numeric', 'refund', 'amount')) <= 1000)))"
+        )
+        for text in (plain, total):
+            guard = _guard(text)
+            assert guard.guard_before("refund", {}).blocked, text
+            assert guard.guard_before("refund", {"count": 2, "amount": 100}).allowed, text
+        assert not _guard(total).guard_before("refund", {"count": 20, "amount": 100}).allowed
+
+    def test_content_atoms_inside_terms_are_grounded(self):
+        from contragent.formulas.formula import Atom as A
+        from contragent.tracer.grounding import collect_content_atoms
+
+        when = A("called_with", "approve", "^big$")
+        f = G(Le(Var("x"), At(Var("x"), when)))
+        g = G(Le(CountSince(A("arg_field_has", "pay", "to", "^ext$"), p), Const(1)))
+        found = collect_content_atoms([f, g])
+        assert ("approve", "^big$") in found["called_with"]
+        assert ("pay", "to", "^ext$") in found["arg_field_has"]
+
+    def test_cumulative_vars_inside_terms_are_found(self):
+        from contragent.runtime.verifier import _collect_cumulative_var_keys
+
+        f = G(Le(Sub(Var("count", "pay"), Prev(Var("count", "pay"))), Const(1)))
+        assert _collect_cumulative_var_keys(f) == {Var("count", "pay").key()}
+
+    def test_foreach_inside_past_is_refused(self):
+        from contragent.formulas.formula import ForEach
+
+        with pytest.raises(ValueError):
+            past_nodes(O(ForEach((("pay", "to"),), p)))
+
+
+class TestEndOfSession:
+    """After the last event the idle events' past values can still change."""
+
+    def test_y_on_the_first_idle_event(self):
+        # q at the last event: Y(q) holds on the first idle event only.
+        for f, expected in [
+            (F(Y(q)), True),
+            (X(Y(q)), False),  # read at event 1: q did not hold at event 0
+            (X(X(Y(q))), True),  # read at the first idle event
+            (F(And(Not(Y(q)), O(q))), True),
+            (U(Not(r), Y(q)), True),
+        ]:
+            trace = [_ev(), _ev(q_=True)]
+            assert evaluate_final(f, trace) is expected, f
+            assert _dfa_holds(f, trace) is expected, f
+
+    def test_two_step_window_settles(self):
+        trace = [_ev(p_=True)]
+        tracker = PastTracker(Y(Y(p)))
+        tracker.step(trace[0])
+        idles = tracker.idle_events({"called(p)": False})
+        assert [ev["__past__"][Y(Y(p))] for ev in idles] == [False, True, False]
+
+    def test_g_binds_the_session_only(self):
+        # G(Y(q)) fails at the first real event already; G is not read on idle events.
+        assert evaluate_final(G(Implies(p, Y(q))), [_ev(q_=True), _ev(p_=True)]) is True
+
+
+class TestAnnotationCache:
+    def test_prefixes_and_growth_share_one_entry(self):
+        f = G(Implies(p, Y(q)))
+        base = [_ev(q_=True), _ev(p_=True), _ev(p_=True), _ev()]
+        assert evaluate(f, base[:2]) is True
+        assert evaluate(f, base) is False
+        assert evaluate(f, base[:2]) is True  # a prefix of a longer annotation
+        assert evaluate(f, base[:3]) is False
+
+    def test_a_changed_last_event_starts_over(self):
+        f = G(Implies(p, Y(q)))
+        trace = [_ev(q_=True), _ev(p_=True)]
+        assert evaluate(f, trace) is True
+        trace[0]["called(q)"] = False
+        trace[1]["called(p)"] = False
+        assert evaluate(f, trace) is True
+        trace[1]["called(p)"] = True
+        assert evaluate(f, trace) is False
+
+    def test_threads(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        f = G(Implies(p, S(Not(r), q)))
+        rng = random.Random(3)
+        traces = [_rand_trace(rng, 30) for _ in range(8)]
+
+        def run(i):
+            t = traces[i % 8]
+            return [evaluate(f, t[:k]) for k in range(1, 31)]
+
+        expected = [run(i) for i in range(8)]
+        with ThreadPoolExecutor(8) as pool:
+            got = list(pool.map(run, range(64)))
+        assert got == [expected[i % 8] for i in range(64)]

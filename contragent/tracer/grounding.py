@@ -312,11 +312,12 @@ def collect_content_atoms(formulas) -> dict[str, set[tuple[str, ...]]]:
             if node.name in _CONTENT_PREDICATES:
                 result.setdefault(node.name, set()).add(node.args)
             return
-        # Recurse into children of composite formula nodes
-        for attr in ("child", "left", "right"):
-            child = getattr(node, attr, None)
-            if child is not None:
-                _walk(child)
+        # Recurse into children of composite nodes, the formulas a term
+        # holds included (``At(t, called_with(...))``).
+        from contragent.formulas.formula import subnodes
+
+        for child in subnodes(node):
+            _walk(child)
 
     for f in formulas:
         _walk(f)

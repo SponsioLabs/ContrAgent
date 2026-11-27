@@ -961,6 +961,25 @@ def collect_atoms(formula: Formula) -> set[Atom]:
     return set()
 
 
+_SUBNODE_FIELDS = ("child", "left", "right", "term", "when", "count", "since", "arg")
+
+
+def subnodes(node: object) -> tuple:
+    """Every formula and term directly under ``node``, formula or term alike.
+
+    The one walk that sees the formulas a term holds (``At.when``,
+    ``CountSince``'s two) as well as the usual ``child``/``left``/``right``;
+    code that looks for atoms or variables anywhere in a contract walks with
+    this, so a predicate inside a past-time term is found like any other.
+    """
+    out = []
+    for name in _SUBNODE_FIELDS:
+        sub = getattr(node, name, None)
+        if sub is not None and not isinstance(sub, (str, bytes, int, float, tuple)):
+            out.append(sub)
+    return tuple(out)
+
+
 def term_children(term: object) -> tuple:
     """The terms directly inside a term."""
     if isinstance(term, Arith):
