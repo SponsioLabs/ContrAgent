@@ -1,9 +1,15 @@
 from contragent.formulas.evaluator import evaluate
 from contragent.formulas.formula import (
+    PAST_KEY,
+    Add,
     And,
+    Arith,
+    At,
     # Propositional
     Atom,
     Const,
+    CountSince,
+    Div,
     Eq,
     F,
     ForEach,
@@ -14,16 +20,23 @@ from contragent.formulas.formula import (
     G,
     Ge,
     Gt,
+    H,
     Implies,
     # Arithmetic / Set (SMT-ready)
     Le,
     Lt,
+    Mul,
     Not,
+    O,
     Or,
+    Prev,
+    S,
+    Sub,
     Subset,
     U,
     Var,
     X,
+    Y,
     # Utilities
     collect_atoms,
 )
@@ -51,4 +64,18 @@ __all__ = [
     "Subset",
     "collect_atoms",
     "evaluate",
+    # Past time and arithmetic between terms
+    "Y",
+    "S",
+    "O",
+    "H",
+    "Prev",
+    "At",
+    "CountSince",
+    "Arith",
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "PAST_KEY",
 ]

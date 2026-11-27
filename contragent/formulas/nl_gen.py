@@ -136,6 +136,35 @@ def _to_nl(node) -> str:
     if isinstance(node, Const):
         return str(node.value)
 
+    from contragent.formulas.formula import (
+        Arith,
+        At,
+        CountSince,
+        H,
+        O,
+        Prev,
+        S,
+        Y,
+    )
+
+    if isinstance(node, Y):
+        return f"at the previous step: {_to_nl(node.child)}"
+    if isinstance(node, O):
+        return f"at some step so far: {_to_nl(node.child)}"
+    if isinstance(node, H):
+        return f"at every step so far: {_to_nl(node.child)}"
+    if isinstance(node, S):
+        return f"{_to_nl(node.left)} ever since {_to_nl(node.right)}"
+    if isinstance(node, Arith):
+        return f"({_to_nl(node.left)} {node.op} {_to_nl(node.right)})"
+    if isinstance(node, Prev):
+        steps = "step" if node.n == 1 else "steps"
+        return f"{_to_nl(node.term)} {node.n} {steps} earlier"
+    if isinstance(node, At):
+        return f"{_to_nl(node.term)} when {_to_nl(node.when)} last held"
+    if isinstance(node, CountSince):
+        return f"the number of steps with {_to_nl(node.count)} since {_to_nl(node.since)}"
+
     return str(node)
 
 

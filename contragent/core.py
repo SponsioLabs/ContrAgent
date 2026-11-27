@@ -522,8 +522,10 @@ class ContrAgent:
             return cached
         from contragent.formulas.det import physical_tool
         from contragent.formulas.formula import (
+            PAST_TERMS,
             ArgLength,
             ArgValue,
+            Arith,
             Atom,
             Eq,
             Ge,
@@ -533,6 +535,8 @@ class ContrAgent:
             Term,
             UnaryFn,
             Var,
+            term_children,
+            term_formulas,
         )
         from contragent.formulas.tool_names import canonical_tool
         from contragent.runtime.verifier import _collect_det_formulas, _raw_formula
@@ -552,6 +556,12 @@ class ContrAgent:
                 numbers.add((canonical_tool(physical_tool(t.args[0])), t.args[1]))
             elif isinstance(t, Var) and t.name == "count_with" and t.args:
                 tools.add(canonical_tool(physical_tool(t.args[0])))
+            elif isinstance(t, (Arith, *PAST_TERMS)):
+                # Arithmetic and past-time terms: read through to what they hold.
+                for sub in term_children(t):
+                    term(sub, ordered)
+                for f in term_formulas(t):
+                    walk(f)
 
         def walk(node: Any) -> None:
             if node is None:
@@ -705,10 +715,10 @@ class ContrAgent:
                 if node.predicate == "called" and node.args:
                     names.setdefault(str(node.args[0]), None)
                 return
-            for attr in ("child", "left", "right"):
-                sub = getattr(node, attr, None)
-                if sub is not None and not isinstance(sub, (str, int, float)):
-                    walk(sub)
+            from contragent.formulas.formula import subnodes
+
+            for sub in subnodes(node):
+                walk(sub)
 
         for c in self._system.contracts:
             if c.agent.id == self.agent_id:

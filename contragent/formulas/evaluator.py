@@ -22,6 +22,8 @@ import warnings
 
 from contragent.formulas._compare import coerce_ordered
 from contragent.formulas.formula import (
+    PAST_FORMULAS,
+    PAST_KEY,
     And,
     Atom,
     Const,
@@ -191,6 +193,10 @@ def _safe_compare(op: str, left: object, right: object) -> bool:
 def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> bool:
     """Evaluates a formula on a finite trace starting at a given position.
 
+    A formula with past-time nodes is read on the trace with their values
+    added to every event (:func:`contragent.formulas.past.annotate`); the
+    past of position ``pos`` is the trace before it.
+
     The trace is a list of dicts where each dict maps predicate keys to
     values:
 
@@ -220,7 +226,28 @@ def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> 
         TypeError: If the formula contains an unknown node type.
     """
     if isinstance(formula, ForEach):
-        return all(evaluate(formula.child, part) for part in formula.slices(trace[pos:]).values())
+        # Each value's slice is a trace of its own: its past starts at its first event.
+        return all(
+            evaluate(formula.child, _strip_past(part))
+            for part in formula.slices(trace[pos:]).values()
+        )
+    from contragent.formulas.past import annotate, is_annotated
+
+    if not is_annotated(formula, trace):
+        trace = annotate(formula, trace)
+    return _evaluate(formula, trace, pos)
+
+
+def _strip_past(trace: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {k: v for k, v in ev.items() if k != PAST_KEY} if PAST_KEY in ev else ev for ev in trace
+    ]
+
+
+def _evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> bool:
+    """:func:`evaluate` on a trace that already carries the past-time values."""
+    if isinstance(formula, ForEach):
+        return evaluate(formula, trace, pos)  # ForEach
 
     if pos >= len(trace):
         # Past end of trace — weak finite-trace semantics:
@@ -241,43 +268,49 @@ def evaluate(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> 
         return bool(state.get(formula.key(), False))
 
     if isinstance(formula, Not):
-        return not evaluate(formula.child, trace, pos)
+        return not _evaluate(formula.child, trace, pos)
 
     if isinstance(formula, And):
-        return evaluate(formula.left, trace, pos) and evaluate(formula.right, trace, pos)
+        return _evaluate(formula.left, trace, pos) and _evaluate(formula.right, trace, pos)
 
     if isinstance(formula, Or):
-        return evaluate(formula.left, trace, pos) or evaluate(formula.right, trace, pos)
+        return _evaluate(formula.left, trace, pos) or _evaluate(formula.right, trace, pos)
 
     if isinstance(formula, Implies):
-        return not evaluate(formula.left, trace, pos) or evaluate(formula.right, trace, pos)
+        return not _evaluate(formula.left, trace, pos) or _evaluate(formula.right, trace, pos)
 
     # --- Temporal (LTL) ---
 
     if isinstance(formula, G):
         for i in range(pos, len(trace)):
-            if not evaluate(formula.child, trace, i):
+            if not _evaluate(formula.child, trace, i):
                 return False
         return True
 
     if isinstance(formula, F):
         for i in range(pos, len(trace)):
-            if evaluate(formula.child, trace, i):
+            if _evaluate(formula.child, trace, i):
                 return True
         return False
 
     if isinstance(formula, X):
         if pos + 1 >= len(trace):
             return True  # weak next
-        return evaluate(formula.child, trace, pos + 1)
+        return _evaluate(formula.child, trace, pos + 1)
 
     if isinstance(formula, U):
         for j in range(pos, len(trace)):
-            if evaluate(formula.right, trace, j):
+            if _evaluate(formula.right, trace, j):
                 return True
-            if not evaluate(formula.left, trace, j):
+            if not _evaluate(formula.left, trace, j):
                 return False
         return False  # ψ never became true
+
+    # --- Past time: the value the tracker put on this event ---
+
+    if isinstance(formula, PAST_FORMULAS):
+        memo = state.get(PAST_KEY)
+        return bool(memo.get(formula, False)) if isinstance(memo, dict) else False
 
     # --- Arithmetic / Set (SMT family) ---
 
@@ -347,23 +380,51 @@ def holds_idle(formula: object, idle: dict[str, object]) -> bool:
     reduce to the formula itself and ``φ U ψ`` to ``ψ``; a ``G`` binds the
     events of the session only and holds.
     """
+    return holds_idle_events(formula, [idle])
+
+
+def holds_idle_events(formula: object, idles: list[dict[str, object]], m: int = 0) -> bool:
+    """:func:`holds_idle` on idle events whose past-time values still change.
+
+    ``idles`` are the idle events after the session in order; the last one
+    repeats forever. With past-time operators the first few idle events
+    can differ (``Y(called('t'))`` holds on the first idle event after a
+    call to ``t`` and not after), so ``X`` reads the next one, ``F`` and
+    ``U`` may be met on any of them, and a ``G`` binds the session only, as
+    in :func:`holds_idle`. With one idle event this is :func:`holds_idle`.
+    """
+    last = len(idles) - 1
+    m = min(m, last)
     if isinstance(formula, bool):
         return formula
     if isinstance(formula, G):
         return True
-    if isinstance(formula, (F, X)):
-        return holds_idle(formula.child, idle)
+    if isinstance(formula, F):
+        return any(holds_idle_events(formula.child, idles, j) for j in range(m, last + 1))
+    if isinstance(formula, X):
+        return holds_idle_events(formula.child, idles, m + 1)
     if isinstance(formula, U):
-        return holds_idle(formula.right, idle)
+        for j in range(m, last + 1):
+            if holds_idle_events(formula.right, idles, j):
+                return True
+            if not holds_idle_events(formula.left, idles, j):
+                return False
+        return False
     if isinstance(formula, Not):
-        return not holds_idle(formula.child, idle)
+        return not holds_idle_events(formula.child, idles, m)
     if isinstance(formula, And):
-        return holds_idle(formula.left, idle) and holds_idle(formula.right, idle)
+        return holds_idle_events(formula.left, idles, m) and holds_idle_events(
+            formula.right, idles, m
+        )
     if isinstance(formula, Or):
-        return holds_idle(formula.left, idle) or holds_idle(formula.right, idle)
+        return holds_idle_events(formula.left, idles, m) or holds_idle_events(
+            formula.right, idles, m
+        )
     if isinstance(formula, Implies):
-        return not holds_idle(formula.left, idle) or holds_idle(formula.right, idle)
-    return evaluate(formula, [idle])
+        return not holds_idle_events(formula.left, idles, m) or holds_idle_events(
+            formula.right, idles, m
+        )
+    return evaluate(formula, [idles[m]])
 
 
 def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 0) -> bool:
@@ -377,17 +438,25 @@ def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 
     """
     from contragent.formulas._pred_key import idle_valuation
 
-    n = len(trace)
-    idle = idle_valuation(trace[-1]) if trace else {}
-
     if isinstance(formula, ForEach):
         return all(
-            evaluate_final(formula.child, part) for part in formula.slices(trace[pos:]).values()
+            evaluate_final(formula.child, _strip_past(part))
+            for part in formula.slices(trace[pos:]).values()
         )
+
+    from contragent.formulas.past import PastTracker, has_past
+
+    n = len(trace)
+    if has_past(formula):
+        tracker = PastTracker(formula)
+        trace = [tracker.step(ev) for ev in _strip_past(trace)]
+        idles = tracker.idle_events(idle_valuation(_strip_past(trace[-1:])[0]) if trace else {})
+    else:
+        idles = [idle_valuation(trace[-1]) if trace else {}]
 
     def ev(f: object, i: int) -> bool:
         if i >= n:
-            return holds_idle(f, idle)
+            return holds_idle_events(f, idles, i - n)
         if isinstance(f, bool):
             return f
         if isinstance(f, Not):
@@ -401,7 +470,7 @@ def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 
         if isinstance(f, G):
             return all(ev(f.child, j) for j in range(i, n))
         if isinstance(f, F):
-            return any(ev(f.child, j) for j in range(i, n)) or holds_idle(f.child, idle)
+            return any(ev(f.child, j) for j in range(i, n)) or holds_idle_events(f, idles)
         if isinstance(f, X):
             return ev(f.child, i + 1)
         if isinstance(f, U):
@@ -410,7 +479,7 @@ def evaluate_final(formula: Formula, trace: list[dict[str, object]], pos: int = 
                     return True
                 if not ev(f.left, j):
                     return False
-            return holds_idle(f.right, idle)
+            return holds_idle_events(f, idles)
         return evaluate(f, trace, i)
 
     return ev(formula, pos)

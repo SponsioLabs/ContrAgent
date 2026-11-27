@@ -53,8 +53,10 @@ from typing import Any, Literal
 
 from contragent.formulas._compare import coerce_ordered
 from contragent.formulas._pred_key import idle_valuation
-from contragent.formulas.evaluator import holds_idle
+from contragent.formulas.evaluator import holds_idle, holds_idle_events
 from contragent.formulas.formula import (
+    PAST_FORMULAS,
+    PAST_KEY,
     And,
     Atom,
     Const,
@@ -203,6 +205,9 @@ def _eval_pointwise(node: Any, state: dict[str, object]) -> Residual:
         )
     if isinstance(node, Subset):
         return bool(state.get(node.key(), False))
+    if isinstance(node, PAST_FORMULAS):
+        memo = state.get(PAST_KEY)
+        return bool(memo.get(node, False)) if isinstance(memo, dict) else False
     raise TypeError(f"_eval_pointwise: unexpected non-temporal node {type(node).__name__}")
 
 
@@ -329,7 +334,7 @@ def _progress(node: Residual, state: dict[str, object]) -> Residual:
     if isinstance(node, Atom):
         return bool(state.get(node.key(), False))
 
-    if isinstance(node, (Le, Lt, Ge, Gt, Eq, Subset)):
+    if isinstance(node, (Le, Lt, Ge, Gt, Eq, Subset) + PAST_FORMULAS):
         return _eval_pointwise(node, state)
 
     if isinstance(node, Not):
@@ -431,6 +436,11 @@ class DFAEvaluator:
         self._initial: Residual = _simplify(formula)
         self._residual: Residual = self._initial
         self._steps_consumed: int = 0
+        # Past-time nodes: their values, kept event by event and put on
+        # each valuation before progression reads it.
+        from contragent.formulas.past import PastTracker, has_past
+
+        self._past = PastTracker(formula) if has_past(formula) else None
         # The last event's valuation: the state the idle events after the
         # end of the session keep (see :meth:`finalize`).
         self._last: dict[str, object] = {}
@@ -446,6 +456,8 @@ class DFAEvaluator:
         calls are O(1) no-ops that keep returning the same verdict.
         """
         self._last = valuation
+        if self._past is not None:
+            valuation = self._past.step(valuation)
         if self._residual is True or self._residual is False:
             self._steps_consumed += 1
             return _to_verdict(self._residual)
@@ -471,13 +483,17 @@ class DFAEvaluator:
 
         Returns ``"⊤"`` or ``"⊥"``.
         """
-        return "⊤" if holds_idle(self._residual, idle_valuation(self._last)) else "⊥"
+        idle = idle_valuation(self._last)
+        if self._past is None:
+            return "⊤" if holds_idle(self._residual, idle) else "⊥"
+        idles = self._past.idle_events(idle)
+        return "⊤" if holds_idle_events(self._residual, idles) else "⊥"
 
     # -----------------------------------------------------------------
     # Snapshot / restore (for dry-run, rollback, session reset)
     # -----------------------------------------------------------------
 
-    def snapshot(self) -> tuple[Residual, int, dict[str, object]]:
+    def snapshot(self) -> tuple:
         """Return an immutable snapshot of the current state.
 
         Formula AST nodes are frozen dataclasses, so the residual tuple
@@ -485,17 +501,25 @@ class DFAEvaluator:
         :meth:`restore` — enabling dry-run / what-if evaluation without
         mutating live state.
         """
-        return (self._residual, self._steps_consumed, self._last)
+        past = self._past.snapshot() if self._past is not None else None
+        return (self._residual, self._steps_consumed, self._last, past)
 
-    def restore(self, snap: tuple[Residual, int, dict[str, object]]) -> None:
+    def restore(self, snap: tuple) -> None:
         """Restore a previously captured snapshot."""
-        self._residual, self._steps_consumed, self._last = snap
+        self._residual, self._steps_consumed, self._last = snap[:3]
+        if self._past is not None:
+            if len(snap) > 3 and snap[3] is not None:
+                self._past.restore(snap[3])
+            else:
+                self._past.reset()
 
     def reset(self) -> None:
         """Rewind to the initial state (before any events)."""
         self._residual = self._initial
         self._steps_consumed = 0
         self._last = {}
+        if self._past is not None:
+            self._past.reset()
 
     # -----------------------------------------------------------------
     # Introspection

@@ -243,7 +243,7 @@ def _collect_cumulative_var_keys(node: Any) -> set[str]:
     leaves), which signals the caller to fall through to per-step
     predicate evaluation.
     """
-    from contragent.formulas.formula import Var
+    from contragent.formulas.formula import Var, subnodes
 
     keys: set[str] = set()
     stack: list[Any] = [node]
@@ -252,10 +252,7 @@ def _collect_cumulative_var_keys(node: Any) -> set[str]:
         if isinstance(cur, Var) and cur.name in _CUMULATIVE_VAR_NAMES:
             keys.add(cur.key())
             continue
-        for attr in ("child", "left", "right"):
-            sub = getattr(cur, attr, None)
-            if sub is not None:
-                stack.append(sub)
+        stack.extend(subnodes(cur))
     return keys
 
 

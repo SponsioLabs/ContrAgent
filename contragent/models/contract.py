@@ -111,8 +111,16 @@ def _formula_is_pure_det(formula: Any) -> bool:
 
     if isinstance(formula, Atom):
         return formula.atom_type == "det"
-    # Arithmetic / set leaves are always det.
-    if isinstance(formula, (Le, Lt, Ge, Gt, Eq, Subset, Var, Const)):
+    # Arithmetic / set leaves are det, unless a term keeps a formula's history.
+    if isinstance(formula, (Le, Lt, Ge, Gt, Eq)):
+        from contragent.formulas.formula import term_formulas
+
+        return all(
+            _formula_is_pure_det(f)
+            for side in (formula.left, formula.right)
+            for f in term_formulas(side)
+        )
+    if isinstance(formula, (Subset, Var, Const)):
         return True
     if isinstance(formula, Not):
         return _formula_is_pure_det(formula.child)
@@ -120,6 +128,11 @@ def _formula_is_pure_det(formula: Any) -> bool:
         return _formula_is_pure_det(formula.left) and _formula_is_pure_det(formula.right)
     if isinstance(formula, (G, F, X)):
         return _formula_is_pure_det(formula.child)
+    from contragent.formulas.formula import PAST_FORMULAS
+
+    if isinstance(formula, PAST_FORMULAS):
+        parts = [getattr(formula, a) for a in ("child", "left", "right") if hasattr(formula, a)]
+        return all(_formula_is_pure_det(p) for p in parts)
     # Unknown node: treat as non-det so dispatch routes it away from
     # the det fast path. A future lifting-aware integrator can
     # override the decision after construction.

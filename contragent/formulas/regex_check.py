@@ -79,6 +79,14 @@ def _iter_atoms(node):
         yield from _iter_atoms(node.left)
         yield from _iter_atoms(node.right)
         return
+    # Past-time terms keep formulas under other names.
+    from contragent.formulas.formula import term_formulas
+
+    for f in term_formulas(node):
+        yield from _iter_atoms(f)
+    term = getattr(node, "term", None)
+    if term is not None:
+        yield from _iter_atoms(term)
     # Comparison / arithmetic nodes (Le/Ge/Eq/...) — they hold operands
     # under .left / .right too; rely on duck-typing rather than importing
     # every numeric class explicitly so this stays robust to additions.

@@ -247,6 +247,15 @@ class _LeafTable:
     _ORIENTED = {Le: "le", Lt: "lt", Ge: "ge", Gt: "gt", Eq: "eq"}
 
     def lit_for(self, leaf: Formula, negated: bool) -> Node:
+        from contragent.formulas.formula import PAST_FORMULAS
+
+        if isinstance(leaf, PAST_FORMULAS):
+            # A past-time node is an opaque proposition here: any truth value
+            # at any event. That admits traces the history would rule out, so
+            # the search may find a model that does not exist (a conflict can
+            # be missed) but never reports a conflict that is not there.
+            pid = self._intern(("past", leaf), repr(leaf))
+            return ("lit", -pid if negated else pid)
         if isinstance(leaf, (Atom, Subset)):
             key = leaf.key()
             pid = self._intern(("atom", key), key)
@@ -421,7 +430,9 @@ def _abstract(formula: Any, table: _LeafTable, negated: bool = False) -> Node:
         # satisfiability a per-value rule reads as its body on one value.
         # Joint queries with other rules are therefore an approximation.
         return _abstract(formula.child, table, negated)
-    if isinstance(formula, (Atom, Subset, Le, Lt, Ge, Gt, Eq)):
+    from contragent.formulas.formula import PAST_FORMULAS
+
+    if isinstance(formula, (Atom, Subset, Le, Lt, Ge, Gt, Eq) + PAST_FORMULAS):
         return table.lit_for(formula, negated)
 
     if isinstance(formula, Not):
@@ -559,10 +570,25 @@ def _term_is_event(term: Any) -> bool | None:
     ``CtxValue``, and the clock read the state.
     """
     from contragent.formulas._pred_key import EVENT_PREDICATES, predicate_of
-    from contragent.formulas.formula import ArgLength, ArgValue, Const, UnaryFn, Var
+    from contragent.formulas.formula import (
+        PAST_TERMS,
+        ArgLength,
+        ArgValue,
+        Arith,
+        Const,
+        UnaryFn,
+        Var,
+    )
 
     if isinstance(term, Const):
         return None
+    if isinstance(term, PAST_TERMS):
+        return False  # a value kept from earlier events: state
+    if isinstance(term, Arith):
+        kinds = {_term_is_event(term.left), _term_is_event(term.right)} - {None}
+        if not kinds:
+            return None
+        return True if True in kinds else False
     if isinstance(term, (ArgValue, ArgLength)):
         return True
     if isinstance(term, Var):
