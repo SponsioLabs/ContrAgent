@@ -8,7 +8,11 @@ Three families of nodes, all composable via operator overloading
 2. **Temporal (LTL)**: ``G``, ``F``, ``X``, ``U``
    -- ordering and liveness over finite traces.
 3. **Arithmetic / Set**: ``Le``, ``Lt``, ``Ge``, ``Gt``, ``Eq``,
-   ``Var``, ``Const``, ``Subset`` -- numeric constraints (SMT-ready).
+   ``Var``, ``Const``, ``Subset`` -- numeric constraints (SMT-ready),
+   and ``Arith`` (``+ - * /`` between two terms).
+4. **Past time**: ``Y``, ``S``, ``O``, ``H`` over formulas and the terms
+   ``Prev``, ``At``, ``CountSince`` -- what has happened so far, read at
+   the current event (:mod:`contragent.formulas.past`).
 
 Every ``Atom`` produces a canonical string key via ``pred_key()``
 (defined in ``_pred_key.py``).  The evaluator looks up this key in the
@@ -237,6 +241,59 @@ class U(FormulaMixin):
         return f"({self.left} U {self.right})"
 
 
+# ---------------------------------------------------------------------------
+# Past-time nodes
+# ---------------------------------------------------------------------------
+#
+# A past-time node is decided at an event by the events up to and including
+# it, so it is a pointwise formula once the history is known: the monitor
+# keeps a few values per node (:class:`contragent.formulas.past.PastTracker`)
+# and the evaluators read the node's value at the current event. Operands
+# are past-time or pointwise formulas: a future operator inside a past one
+# is refused when the tracker is built.
+
+
+@dataclass(frozen=True)
+class Y(FormulaMixin):
+    """Yesterday — Y(φ) holds at an event when φ held at the previous one (False at the first)."""
+
+    child: Formula
+
+    def __repr__(self) -> str:
+        return f"Y({self.child})"
+
+
+@dataclass(frozen=True)
+class S(FormulaMixin):
+    """Since — S(φ, ψ): ψ held at some event up to now, and φ at every event after it."""
+
+    left: Formula
+    right: Formula
+
+    def __repr__(self) -> str:
+        return f"S({self.left}, {self.right})"
+
+
+@dataclass(frozen=True)
+class O(FormulaMixin):  # noqa: E742 - the standard name of the operator
+    """Once — O(φ): φ held at some event up to now."""
+
+    child: Formula
+
+    def __repr__(self) -> str:
+        return f"O({self.child})"
+
+
+@dataclass(frozen=True)
+class H(FormulaMixin):
+    """Historically — H(φ): φ held at every event up to now."""
+
+    child: Formula
+
+    def __repr__(self) -> str:
+        return f"H({self.child})"
+
+
 @dataclass(frozen=True)
 class ForEach(FormulaMixin):
     """Per value — ``child`` holds separately for every value of an argument.
@@ -395,6 +452,39 @@ class Term:
 
     def evaluate(self, state: dict) -> object:  # pragma: no cover - abstract
         raise NotImplementedError(f"{type(self).__name__} must implement evaluate(state)")
+
+    # ``+ - * /`` build an :class:`Arith` node; a number becomes a ``Const``.
+    def __add__(self, other: object) -> Arith:
+        return Arith("+", self, _as_term(other))
+
+    def __radd__(self, other: object) -> Arith:
+        return Arith("+", _as_term(other), self)
+
+    def __sub__(self, other: object) -> Arith:
+        return Arith("-", self, _as_term(other))
+
+    def __rsub__(self, other: object) -> Arith:
+        return Arith("-", _as_term(other), self)
+
+    def __mul__(self, other: object) -> Arith:
+        return Arith("*", self, _as_term(other))
+
+    def __rmul__(self, other: object) -> Arith:
+        return Arith("*", _as_term(other), self)
+
+    def __truediv__(self, other: object) -> Arith:
+        return Arith("/", self, _as_term(other))
+
+    def __rtruediv__(self, other: object) -> Arith:
+        return Arith("/", _as_term(other), self)
+
+
+def _as_term(x: object) -> Term:
+    if isinstance(x, Term):
+        return x
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise TypeError(f"not a term or a number: {x!r}")
+    return Const(x)
 
 
 @dataclass(frozen=True)
@@ -604,6 +694,139 @@ class ArgLength(Term):
             return None
 
 
+_ARITH_NAMES = {"+": "Add", "-": "Sub", "*": "Mul", "/": "Div"}
+
+
+@dataclass(frozen=True)
+class Arith(Term):
+    """``left op right`` for ``op`` in ``+ - * /``, between two terms.
+
+    ``None`` when either operand has no value or is not a number (a string
+    that denotes a number is read as that number, as comparisons do), and
+    for a division by zero. Prints as ``Add(a, b)``, ``Sub``, ``Mul``,
+    ``Div``, which :func:`contragent.formulas.parser.parse_repr` reads back.
+    """
+
+    op: str
+    left: Term
+    right: Term
+
+    def __post_init__(self) -> None:
+        if self.op not in _ARITH_NAMES:
+            raise ValueError(f"Arith op must be one of + - * /, got {self.op!r}")
+
+    def __repr__(self) -> str:
+        return f"{_ARITH_NAMES[self.op]}({self.left!r}, {self.right!r})"
+
+    def evaluate(self, state: dict) -> object:
+        from contragent.formulas._compare import to_number
+
+        a = _term_value(self.left, state)
+        b = _term_value(self.right, state)
+        if a is None or b is None:
+            return None
+        a, b = to_number(a), to_number(b)
+        if a is None or b is None:
+            return None
+        if self.op == "+":
+            return a + b
+        if self.op == "-":
+            return a - b
+        if self.op == "*":
+            return a * b
+        if b == 0:
+            return None
+        return a / b
+
+
+def Add(left: object, right: object) -> Arith:  # noqa: N802 - reads like the other constructors
+    return Arith("+", _as_term(left), _as_term(right))
+
+
+def Sub(left: object, right: object) -> Arith:  # noqa: N802
+    return Arith("-", _as_term(left), _as_term(right))
+
+
+def Mul(left: object, right: object) -> Arith:  # noqa: N802
+    return Arith("*", _as_term(left), _as_term(right))
+
+
+def Div(left: object, right: object) -> Arith:  # noqa: N802
+    return Arith("/", _as_term(left), _as_term(right))
+
+
+def _term_value(t: Term, state: dict) -> object:
+    """A term's value as comparisons read it (a ``Var`` defaults to 0)."""
+    return t.evaluate(state)
+
+
+#: Where :class:`contragent.formulas.past.PastTracker` puts the values of
+#: past-time nodes in an event's valuation: ``valuation[PAST_KEY][node]``.
+PAST_KEY = "__past__"
+
+
+def _past_value(node: object, state: dict) -> object:
+    memo = state.get(PAST_KEY)
+    if not isinstance(memo, dict):
+        return None
+    return memo.get(node)
+
+
+@dataclass(frozen=True)
+class Prev(Term):
+    """The value ``term`` had ``n`` events before this one (``None`` before that many events)."""
+
+    term: Term
+    n: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
+            raise ValueError(f"Prev needs n >= 1, got {self.n!r}")
+
+    def __repr__(self) -> str:
+        return f"Prev({self.term!r}, {self.n})"
+
+    def evaluate(self, state: dict) -> object:
+        return _past_value(self, state)
+
+
+@dataclass(frozen=True)
+class At(Term):
+    """The value ``term`` had at the last event where ``when`` held, this one included.
+
+    ``None`` until ``when`` has held once. Freezes a value at a moment,
+    such as the price when a position was opened.
+    """
+
+    term: Term
+    when: Formula
+
+    def __repr__(self) -> str:
+        return f"At({self.term!r}, {self.when})"
+
+    def evaluate(self, state: dict) -> object:
+        return _past_value(self, state)
+
+
+@dataclass(frozen=True)
+class CountSince(Term):
+    """How many events after the last one where ``since`` held had ``count`` hold.
+
+    0 at an event where ``since`` holds; ``None`` until it has held once.
+    With ``count`` an event that marks a clock tick, this counts ticks
+    since a moment: ``CountSince(called('tick'), called('submit'))``.
+    """
+
+    count: Formula
+    since: Formula
+
+    def __repr__(self) -> str:
+        return f"CountSince({self.count}, {self.since})"
+
+    def evaluate(self, state: dict) -> object:
+        return _past_value(self, state)
+
+
 @dataclass(frozen=True)
 class Le(FormulaMixin):
     """Less than or equal: left <= right."""
@@ -678,8 +901,31 @@ class Subset(FormulaMixin):
 # ---------------------------------------------------------------------------
 
 Formula = (
-    Atom | Not | And | Or | Implies | G | F | X | U | ForEach | Le | Lt | Ge | Gt | Eq | Subset
+    Atom
+    | Not
+    | And
+    | Or
+    | Implies
+    | G
+    | F
+    | X
+    | U
+    | Y
+    | S
+    | O
+    | H
+    | ForEach
+    | Le
+    | Lt
+    | Ge
+    | Gt
+    | Eq
+    | Subset
 )
+
+#: Past-time formula nodes and terms (:mod:`contragent.formulas.past`).
+PAST_FORMULAS = (Y, S, O, H)
+PAST_TERMS = (Prev, At, CountSince)
 
 
 # ---------------------------------------------------------------------------
@@ -702,10 +948,40 @@ def collect_atoms(formula: Formula) -> set[Atom]:
         return collect_atoms(formula.child)
     elif isinstance(formula, (And, Or, Implies, U)):
         return collect_atoms(formula.left) | collect_atoms(formula.right)
-    elif isinstance(formula, (G, F, X, ForEach)):
+    elif isinstance(formula, (G, F, X, ForEach, Y, O, H)):
         return collect_atoms(formula.child)
-    # Arithmetic nodes don't contain Atoms
+    elif isinstance(formula, S):
+        return collect_atoms(formula.left) | collect_atoms(formula.right)
+    elif isinstance(formula, (Le, Lt, Ge, Gt, Eq)):
+        # A term can hold formulas: ``At(t, when)``, ``CountSince(count, since)``.
+        out: set[Atom] = set()
+        for f in term_formulas(formula.left) + term_formulas(formula.right):
+            out |= collect_atoms(f)
+        return out
     return set()
+
+
+def term_children(term: object) -> tuple:
+    """The terms directly inside a term."""
+    if isinstance(term, Arith):
+        return (term.left, term.right)
+    if isinstance(term, (Prev, At)):
+        return (term.term,)
+    if isinstance(term, UnaryFn):
+        return (term.arg,)
+    return ()
+
+
+def term_formulas(term: object) -> list:
+    """The formulas held anywhere inside a term (``At.when``, ``CountSince``'s two)."""
+    out: list = []
+    if isinstance(term, At):
+        out.append(term.when)
+    elif isinstance(term, CountSince):
+        out += [term.count, term.since]
+    for t in term_children(term):
+        out += term_formulas(t)
+    return out
 
 
 #: Predicates decided by the agent's own actions, the set $V_{ag}$. A

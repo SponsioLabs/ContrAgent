@@ -37,8 +37,11 @@ from contragent.formulas.formula import (
     And,
     ArgLength,
     ArgValue,
+    Arith,
+    At,
     Atom,
     Const,
+    CountSince,
     CtxValue,
     Eq,
     F,
@@ -51,10 +54,18 @@ from contragent.formulas.formula import (
     Lt,
     Not,
     Or,
+    Prev,
     U,
     Var,
     X,
 )
+from contragent.formulas.formula import H as Historically
+from contragent.formulas.formula import O as Once
+from contragent.formulas.formula import S as Since
+from contragent.formulas.formula import Y as Yesterday
+
+_PAST_UNARY = {"Y": Yesterday, "O": Once, "H": Historically}
+_ARITH_OPS = {"Add": "+", "Sub": "-", "Mul": "*", "Div": "/"}
 
 
 class ParseError(Exception):
@@ -129,6 +140,20 @@ def _parse_expr(tokens: list[str], pos: int) -> tuple:
 
     tok = tokens[pos]
 
+    # Past-time operators
+    if tok in _PAST_UNARY and pos + 1 < len(tokens) and tokens[pos + 1] == "(":
+        pos = _expect(tokens, pos + 1, "(")
+        child, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ")")
+        return _PAST_UNARY[tok](child), pos
+    if tok == "S" and pos + 1 < len(tokens) and tokens[pos + 1] == "(":
+        pos = _expect(tokens, pos + 1, "(")
+        left, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ",")
+        right, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ")")
+        return Since(left, right), pos
+
     # Unary operators
     if tok in ("G", "F", "X", "Not"):
         cls = {"G": G, "F": F, "X": X, "Not": Not}[tok]
@@ -200,6 +225,42 @@ def _parse_expr(tokens: list[str], pos: int) -> tuple:
 def _parse_var_or_const(tokens: list[str], pos: int) -> tuple:
     """Parse a Var, Const, or any other Term subclass (ArgValue, CtxValue, ArgLength)."""
     tok = tokens[pos]
+    if tok in _ARITH_OPS:
+        pos = _expect(tokens, pos + 1, "(")
+        left, pos = _parse_var_or_const(tokens, pos)
+        pos = _expect(tokens, pos, ",")
+        right, pos = _parse_var_or_const(tokens, pos)
+        pos = _expect(tokens, pos, ")")
+        return Arith(_ARITH_OPS[tok], left, right), pos
+    if tok == "Prev":
+        pos = _expect(tokens, pos + 1, "(")
+        term, pos = _parse_var_or_const(tokens, pos)
+        n = 1
+        if tokens[pos] == ",":
+            pos += 1
+            try:
+                n = int(tokens[pos])
+            except ValueError:
+                raise ParseError(
+                    f"Prev takes a whole number of events, got {tokens[pos]!r}"
+                ) from None
+            pos += 1
+        pos = _expect(tokens, pos, ")")
+        return Prev(term, n), pos
+    if tok == "At":
+        pos = _expect(tokens, pos + 1, "(")
+        term, pos = _parse_var_or_const(tokens, pos)
+        pos = _expect(tokens, pos, ",")
+        when, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ")")
+        return At(term, when), pos
+    if tok == "CountSince":
+        pos = _expect(tokens, pos + 1, "(")
+        count, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ",")
+        since, pos = _parse_expr(tokens, pos)
+        pos = _expect(tokens, pos, ")")
+        return CountSince(count, since), pos
     if tok == "Var":
         return _parse_var(tokens, pos)
     if tok == "Const":
@@ -349,6 +410,9 @@ def parse_repr(text: str) -> And | Or | Not | Implies | G | F | X | U | Atom:
     def peek():
         return tokens[pos[0]] if pos[0] < len(tokens) else None
 
+    def peek_next():
+        return tokens[pos[0] + 1] if pos[0] + 1 < len(tokens) else None
+
     def consume(expected=None):
         if pos[0] >= len(tokens):
             raise ParseError(f"Unexpected end, expected {expected!r}")
@@ -370,10 +434,10 @@ def parse_repr(text: str) -> And | Or | Not | Implies | G | F | X | U | Atom:
     #   !  G  F  X  ...       unary / atom (handled in _parse_repr_unary)
 
     def parse_cmp():
-        left = _parse_repr_unary(peek, consume, parse_expr)
+        left = _parse_repr_unary(peek, consume, parse_expr, peek_next)
         if peek() in ("<=", ">=", "<", ">", "=="):
             op = consume()
-            right = _parse_repr_unary(peek, consume, parse_expr)
+            right = _parse_repr_unary(peek, consume, parse_expr, peek_next)
             cls = {"<=": Le, ">=": Ge, "<": Lt, ">": Gt, "==": Eq}[op]
             # Predicate-shaped tokens like ``consecutive_count(t)`` /
             # ``count(t)`` / ``token_count("input_tokens")`` parse as
@@ -552,7 +616,7 @@ def _tokenize_repr(text: str) -> list[str]:
     return tokens
 
 
-def _parse_repr_unary(peek, consume, parse_expr):
+def _parse_repr_unary(peek, consume, parse_expr, peek_next=lambda: "("):
     """Parse a unary expression or atom in repr format."""
     t = peek()
     if t == "!":
@@ -566,7 +630,7 @@ def _parse_repr_unary(peek, consume, parse_expr):
         #   * ``!!x``            — double-negation, harmless
         # Without this the LTL pack files written in the natural infix
         # style fail to parse on the very first ``!flow`` token.
-        child = _parse_repr_unary(peek, consume, parse_expr)
+        child = _parse_repr_unary(peek, consume, parse_expr, peek_next)
         return Not(child)
     elif t == "(":
         consume("(")
@@ -591,6 +655,54 @@ def _parse_repr_unary(peek, consume, parse_expr):
         child = parse_expr()
         consume(")")
         return X(child)
+    elif t in _PAST_UNARY and peek_next() == "(":
+        consume(t)
+        consume("(")
+        child = parse_expr()
+        consume(")")
+        return _PAST_UNARY[t](child)
+    elif t == "S" and peek_next() == "(":
+        consume("S")
+        consume("(")
+        left = parse_expr()
+        consume(",")
+        right = parse_expr()
+        consume(")")
+        return Since(left, right)
+    elif t in _ARITH_OPS and peek_next() == "(":
+        consume(t)
+        consume("(")
+        left = _atom_to_var(parse_expr())
+        consume(",")
+        right = _atom_to_var(parse_expr())
+        consume(")")
+        return Arith(_ARITH_OPS[t], left, right)
+    elif t == "Prev" and peek_next() == "(":
+        consume("Prev")
+        consume("(")
+        term = _atom_to_var(parse_expr())
+        n = 1
+        if peek() == ",":
+            consume(",")
+            n = int(consume())
+        consume(")")
+        return Prev(term, n)
+    elif t == "At" and peek_next() == "(":
+        consume("At")
+        consume("(")
+        term = _atom_to_var(parse_expr())
+        consume(",")
+        when = parse_expr()
+        consume(")")
+        return At(term, when)
+    elif t == "CountSince" and peek_next() == "(":
+        consume("CountSince")
+        consume("(")
+        count = parse_expr()
+        consume(",")
+        since = parse_expr()
+        consume(")")
+        return CountSince(count, since)
     elif t == "ForEach":
         # ``ForEach('tool', 'field', ..., body)``: string pairs, then the body.
         consume("ForEach")

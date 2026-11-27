@@ -548,6 +548,14 @@ class ContrAgent:
                 fields.add((canonical_tool(t.tool), t.field))
             elif isinstance(t, UnaryFn):
                 term(t.arg, False)
+            elif isinstance(t, Term):
+                # Arithmetic and past-time terms: read through to what they hold.
+                from contragent.formulas.formula import term_children, term_formulas
+
+                for sub in term_children(t):
+                    term(sub, ordered)
+                for f in term_formulas(t):
+                    walk(f)
             elif isinstance(t, Var) and t.name == "arg_numeric" and len(t.args) >= 2:
                 numbers.add((canonical_tool(physical_tool(t.args[0])), t.args[1]))
             elif isinstance(t, Var) and t.name == "count_with" and t.args:

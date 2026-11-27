@@ -6,6 +6,19 @@ project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Past-time operators `Y`, `S`, `O`, `H` and the terms `Prev(t, n)`,
+  `At(t, w)` (the value of `t` when `w` last held) and
+  `CountSince(c, s)`, in both evaluators, both parsers, the text renderer
+  and the satisfiability check (where a past-time formula is an opaque
+  proposition, so no false conflicts). `contragent.formulas.past.PastTracker`
+  keeps their values event by event; the DFA monitor carries it through
+  `snapshot`/`restore`, and the recursive evaluator annotates a growing
+  trace incrementally.
+- Arithmetic between terms: `Arith` with `Add`, `Sub`, `Mul`, `Div`
+  (and `+ - * /` on terms). No value when an operand has none or on a
+  division by zero.
+
 ### Changed
 - The live SOPBench harness counts a forbidden goal as unsafe when the
   goal call succeeds or changes the simulator database, even if the call

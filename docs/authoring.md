@@ -153,6 +153,37 @@ of reading arguments:
 - Tool names are compared in a canonical spelling, and an MCP wire name
   `mcp__server__tool` answers to `tool`, so write the bare name.
 
+### Past time and arithmetic
+
+A rule about what has already happened reads more directly with the
+past-time operators, decided at each event by the events up to it:
+
+| Operator | Holds, or has the value, at the current event |
+|---|---|
+| `Y(p)` | `p` held at the previous event (false at the first) |
+| `S(p, q)` | `q` held at some earlier or current event and `p` at every event after it |
+| `O(p)` / `H(p)` | `p` held at some / every event so far |
+| `Prev(t, n)` | the value of term `t` `n` events ago (no value before that) |
+| `At(t, w)` | the value of `t` at the last event where `w` held (no value before) |
+| `CountSince(c, s)` | the number of events with `c` since the last `s` (no value before `s`) |
+
+Terms combine with `Add`, `Sub`, `Mul`, `Div` (or `+ - * /` in Python);
+an operand with no value, or a division by zero, gives no value, and a
+comparison with no value is false, as for arguments above.
+
+```yaml
+- desc: "refunds only under an approval that was not revoked since"
+  G: {ltl: "G((called('refund') -> S(!(called('revoke_approval')), called('approve_refund'))))"}
+- desc: "the total of a bulk refund stays under the limit"
+  G: {ltl: "G((called('refund') -> (Mul(Var('arg_numeric', 'refund', 'count'), Var('arg_numeric', 'refund', 'amount')) <= 1000)))"}
+```
+
+Operands of a past-time operator are pointwise or past-time; a future
+operator inside one (`O(F(p))`) is refused. The conflict check treats a
+past-time formula as a proposition free to take any value, so it reports
+no conflict that the history would not produce, but may miss one that
+only the history rules out.
+
 ## 6. Check the library before an agent runs under it
 
 Three checks, all deterministic, all without a model.
